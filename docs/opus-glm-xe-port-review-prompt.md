@@ -85,7 +85,8 @@ For RDNA3+, Intel Arc+, B580, or other newer hardware gaps:
 
 Linux 6.12:
 
-- `drivers/gpu/drm/xe/` exists and is substantial.
+- `drivers/gpu/drm/xe/` exists and is substantial, roughly 396 checked-in
+  files in the local tree.
 - `include/drm/intel/xe_pciids.h` includes DG2 and BMG/Battlemage IDs.
 - `drivers/gpu/drm/xe/xe_pci.c` wires `XE_BMG_IDS` to a Battlemage descriptor.
 - B580 PCI ID `0xE20B` is in `XE_BMG_IDS`.
@@ -118,6 +119,144 @@ Linux 6.12:
 - `linux/relay.h` is dummy-only
 - `linux/devcoredump.h` is minimal/stub-like
 - real auxiliary-bus / MEI auxiliary integration is not clearly present
+
+## Specific Xe Kernel Dependencies
+
+Please review these dependency details carefully.
+Some of them are verified in the local Linux 6.12 tree; others are deliberately
+called out as possible post-6.12/newer-Xe dependencies that must not be folded
+into the 6.12 baseline silently.
+
+### Linux 6.12 userptr and HMM path
+
+In the local Linux 6.12 tree, userptr is not a generic `drm_gpusvm` path.
+It is implemented through Xe VM code:
+
+- UAPI operation: `DRM_XE_VM_BIND_OP_MAP_USERPTR`
+- `drivers/gpu/drm/xe/xe_vm.c`
+  - creates userptr VMAs when VM_BIND has no GEM object
+  - registers `struct mmu_interval_notifier`
+  - uses `vma_userptr_invalidate` as the notifier callback
+  - calls `mmu_interval_notifier_insert`
+  - removes the notifier in late VMA destruction
+- `drivers/gpu/drm/xe/xe_hmm.c`
+  - uses `hmm_range_fault`
+  - uses `hmm_pfn_to_page`
+  - builds an sg table from HMM-populated system pages
+  - DMA maps that sg table for GPU access
+  - currently asserts pages are not device-private pages
+- `drivers/gpu/drm/xe/Makefile`
+  - builds `xe_hmm.o` behind `CONFIG_HMM_MIRROR`
+- `drivers/gpu/drm/xe/Kconfig`
+  - `DRM_XE` selects `HMM_MIRROR`
+
+This means the early FreeBSD port cannot treat `linux/hmm.h` or
+`linux/mmu_notifier.h` as harmless compile-only headers if MAP_USERPTR is
+enabled.
+The first-stage plan is to make MAP_USERPTR unsupported until real FreeBSD
+semantics exist.
+
+### Potential newer SVM / GPUSVM path to verify
+
+A separate review mentioned these symbols and concepts:
+
+- `xe_svm.c`
+- `xe_svm.h`
+- `CONFIG_DRM_XE_GPUSVM`
+- `drm_gpusvm`
+- `drm_pagemap`
+- `dev_pagemap`
+- `MEMORY_DEVICE_PRIVATE`
+- `drm_pagemap_migrate_to_devmem`
+- `drm_pagemap_evict_to_ram`
+- `xe_svm_copy`
+- `xe_svm_handle_pagefault`
+
+Local verification against `../nx/linux-6.12` did not find `xe_svm.c`,
+`xe_svm.h`, `CONFIG_DRM_XE_GPUSVM`, `drm_gpusvm`, or `drm_pagemap`.
+
+Please determine whether those are:
+
+- post-6.12 mainline Xe work
+- a 6.12.y LTS backport not present in the local reference tree
+- Rocky/RHEL downstream work
+- an unrelated branch or future Xe SVM design
+- something the current local inventory missed
+
+If they are post-6.12, they should not affect the first FreeBSD port unless
+chosen as explicit, documented backports.
+
+### Explicit VM_BIND path
+
+The current assumption is that explicit VM_BIND of a GEM BO to a GPU VA does
+not require userptr or SVM.
+
+Expected dependencies for non-userptr VM_BIND:
+
+- `drm_gpuvm`
+- `drm_exec`
+- TTM
+- `dma_resv`
+- `dma_fence`
+- Xe page-table update code
+- Xe migration and BO validation paths
+
+This is a critical assumption.
+Please check whether basic explicit BO-to-GPU-VA mapping can work while
+MAP_USERPTR/HMM is disabled, or whether page-fault mode, USM, or some hidden
+Xe assumption routes even BO-backed VM_BIND through userptr/SVM-like paths.
+
+### GPU page fault and USM path
+
+Linux 6.12 has `drivers/gpu/drm/xe/xe_gt_pagefault.c`.
+
+Local observations:
+
+- page-fault handling is gated by `xe->info.has_usm`
+- Xe2/Battlemage sets `has_usm = 1`
+- `DRM_XE_VM_CREATE_FLAG_FAULT_MODE` requires hardware USM support
+- the page-fault handler can look up VMAs and rebind them
+- if the VMA is userptr, the fault path may repin userptr pages
+
+The early FreeBSD port must decide whether to:
+
+- disable fault-mode VM creation initially
+- allow fault mode only for non-userptr BO-backed VMAs
+- fail page faults explicitly until the path is understood
+- keep the Linux 6.12 behavior and make the missing pieces real
+
+### Firmware and GSC path
+
+GuC/HuC firmware bring-up is part of the first real hardware milestone.
+
+Areas that need review:
+
+- GuC CT uses driver-allocated buffers and command transport state.
+- GuC ADS allocates a BO for GuC internal data.
+- GSC / HECI integration uses `linux/mei_aux.h`.
+- `xe_heci_gsc.c` creates an `auxiliary_device` and a `mei_aux_device`.
+- `xe_heci_gsc_init` returns `void` and calls `xe_heci_gsc_fini` on local
+  failure.
+
+Question for review:
+
+- if FreeBSD lacks real `auxiliary_bus` or `mei_aux` semantics, can the GSC
+  path fail gracefully without blocking base probe, firmware load, GT init, or
+  DRM registration?
+
+### Display path
+
+Linux 6.12 has both `CONFIG_DRM_XE_DISPLAY` and the `xe.probe_display` module
+parameter.
+
+Many display entry points return success or no-op when `xe->info.probe_display`
+is false.
+
+Question for review:
+
+- can the FreeBSD port compile out or stub display early and still reach
+  `drm_dev_register()` for a secondary A380/B580 bring-up target, or is display
+  entangled earlier than expected?
 
 ## Precedent Findings
 
@@ -262,18 +401,30 @@ Please answer as a skeptical reviewer.
    correct for FreeBSD upstream review?
 2. What important LinuxKPI or DRM dependencies are missing from the findings?
 3. Is deferring userptr/HMM the right first-stage decision, or will Xe depend
-   on those paths earlier than expected?
+   on those paths earlier than expected? Specifically, Linux 6.12 userptr uses
+   `mmu_interval_notifier` and `hmm_range_fault`, and the page-fault handler
+   can repin userptr VMAs. Can GPU page faults occur in the first milestone
+   without userptr enabled, and what should happen if they do?
 4. Is HECI GSC safe to stage after base attach/GT bring-up, or is there a
-   hidden dependency that makes it an earlier blocker?
+   hidden dependency that makes it an earlier blocker? Specifically, GSC
+   creates an `auxiliary_device` through `mei_aux` infrastructure. If
+   auxiliary-bus support is missing or incomplete in LinuxKPI, can
+   `xe_heci_gsc_init` fail gracefully without blocking the rest of probe?
 5. Is a non-display Xe core import realistic for A380/B580 early bring-up, or
    will display code be entangled enough that it must come earlier?
+   Specifically, can display probing and init be compiled out or stubbed to
+   return success, and can non-display Xe still reach `drm_dev_register()`?
 6. What would be the smallest honest Xe source subset to import first without
    creating a misleading toy driver?
 7. What should the first FreeBSD hardware milestone be: build/load, PCI attach,
    firmware init, DRM node, render node, or basic submission?
 8. Which pieces should be explicit `-ENODEV` / `-EOPNOTSUPP` at first?
 9. Which FreeBSD APIs or LinuxKPI shims are most likely to cause subtle runtime
-   bugs rather than compile failures?
+   bugs rather than compile failures? Concrete candidates include dma-resv
+   locking semantics, ww_mutex deadlock detection, drm_exec locking under
+   FreeBSD witness, TTM placement and eviction under memory pressure,
+   dma_fence timeline signaling, sync_file fd lifecycle, and drm_gpuvm range
+   tracking under concurrent VM_BIND operations.
 10. What should the first 10 patches in an upstreamable series look like?
 11. What FreeBSD developer objections should this plan anticipate?
 12. Is the Rocky Linux 10.1 A/B strategy sound, and what extra data should be
@@ -282,6 +433,17 @@ Please answer as a skeptical reviewer.
    preserving FreeBSD-native upstream tests?
 14. What assumptions in this plan are weak, overconfident, or likely wrong?
 15. What should be done next before writing any Xe port code?
+16. Xe's explicit VM_BIND path for BO-to-GPU-VA mappings appears not to depend
+   on userptr/HMM. It appears to need `drm_gpuvm`, `drm_exec`, TTM, `dma_resv`,
+   and `dma_fence`, which are already present in the FreeBSD 6.12 DRM lane.
+   Does this mean basic VM_BIND can work in the first milestone with
+   userptr/HMM deferred, or is there a hidden dependency such as GPU page
+   faults on VM-bound BOs going through userptr-like paths?
+17. A separate review mentioned `CONFIG_DRM_XE_GPUSVM`, `xe_svm.c`,
+   `drm_gpusvm`, and `drm_pagemap`, but these are not visible in the local
+   Linux 6.12 reference tree. Are those post-6.12 dependencies that should be
+   ignored until an explicit backport decision, or is the local source
+   inventory missing a relevant 6.12/LTS component?
 
 ## Desired Output
 
