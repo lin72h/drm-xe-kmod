@@ -1,0 +1,56 @@
+# Local editor and OS noise
+.DS_Store
+*~
+*.swp
+*.swo
+
+# Build products and temporary trees should live outside this Git-tracked repo.
+build/
+out/
+obj/
+tmp/
+work/
+cache/
+dist/
+artifacts/
+
+# Hardware logs and captured traces can become large. Store them under
+# ../wip-drm-xe-artifacts/ or another parent-directory artifact area instead.
+logs/
+captures/
+traces/
+crash/
+crashes/
+vmcores/
+*.core
+*.vmcore
+*.dmp
+
+# Downloaded packages, images, and archives.
+*.rpm
+*.txz
+*.tar
+*.tar.gz
+*.tar.xz
+*.tgz
+*.zip
+*.iso
+*.img
+*.qcow2
+*.raw
+
+# Compiled binaries and object files.
+*.o
+*.a
+*.so
+*.ko
+*.ko.xz
+*.exe
+*.dylib
+
+# Language/tool build directories for future project-owned tooling.
+_build/
+deps/
+zig-cache/
+zig-out/
+.zig-cache/
