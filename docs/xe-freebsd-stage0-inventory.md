@@ -89,9 +89,12 @@ The 6.12 lane already has the main generic DRM building blocks Xe expects:
 - `drm_exec`
 - `drm_gpuvm`
 - `drm_buddy`
+- `drm_sched`
 - TTM resource support including `ttm_resource`
 - `dma-resv`
 - `dma-fence`
+- `dma_fence_chain`
+- `dma_fence_array`
 - `sync_file`
 
 LinuxKPI already provides several useful pieces:
@@ -147,6 +150,10 @@ Likely first-round staged or stubbed areas:
 
 - `linux/mmu_notifier.h` exists, but is only a dummy structure today
 - `linux/devcoredump.h` exists, but is only minimally stubbed
+- runtime PM support is mostly an always-on stub today
+- `iosys-map` exists, but VRAM BAR WC/UC correctness still needs validation
+- workqueue cancellation and flush behavior exists, but must be validated under
+  Xe load/unload and self-rescheduling work patterns
 
 ### Missing or dummy for Xe
 
@@ -172,11 +179,17 @@ Linux Xe 6.12 expects:
 
 The local FreeBSD 6.12 lane does not provide that today.
 
+The external review confirms that, in Linux 6.12, `xe_hmm.c` is used through
+the userptr path and BO-backed explicit VM_BIND does not route through HMM.
+That makes userptr/HMM deferral viable for the first milestone.
+
 Short-term honest answer:
 
 - make Xe `MAP_USERPTR` unsupported on FreeBSD first
 - keep that cut local to Xe in `drm-kmod-6.12`
 - return a clear unsupported error for userptr-related UAPI
+- reject `DRM_XE_VM_CREATE_FLAG_FAULT_MODE` at first, including on DG2/A380,
+  because DG2 also advertises `has_usm = 1`
 
 Longer-term generic answer:
 
@@ -194,6 +207,9 @@ Practical implication:
 - early Xe bring-up can focus on attach, firmware, MMIO, GT, IRQ, and DRM
   registration first
 - HECI GSC can be staged after the base device path is alive
+- on A380, missing GSC mainly affects HuC authentication and media paths
+- on B580, GSC/CSCFI may be more important, so B580 should follow A380 rather
+  than lead the FreeBSD bring-up
 
 ### 3. DG2/A380 is the right first hardware target
 
@@ -210,14 +226,22 @@ ownership conflicts on the host display GPU.
 
 1. `xe` builds and loads in the 6.12 lane.
 2. The A380 probes and attaches while Alder Lake remains on `i915`.
-3. Firmware loading for the GuC and related uc path is real enough to
-   initialize the device.
-4. MMIO, GT init, VRAM probe, and IRQ setup complete without panic.
-5. `drm_dev_register()` succeeds and the device node appears.
+3. MMIO BAR mapping succeeds.
+4. VRAM probing reports a sane size and BAR aperture.
+5. Firmware loading for the GuC and related uc path is real enough to
+   diagnose failures.
+6. GuC CT initializes or fails at a clearly understood point.
+7. GT init and IRQ setup complete without panic, or fail with a useful trace.
+8. `drm_dev_register()` succeeds if initialization reaches that stage.
+9. The render node appears only after the lower milestones are stable.
 
 For each milestone, capture a paired Rocky Linux 10.x A/B log when practical.
 The comparison should show whether FreeBSD fails before, at, or after the same
 Linux Xe milestone on the same A380.
+
+Track runtime semantic risks separately:
+
+- [xe-runtime-semantic-risks.md](xe-runtime-semantic-risks.md)
 
 ## Patch Split
 

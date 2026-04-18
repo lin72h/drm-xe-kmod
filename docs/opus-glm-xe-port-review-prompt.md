@@ -103,7 +103,7 @@ Linux 6.12:
 - `scripts/drmgeneratepatch` currently excludes `include/uapi/drm/xe_drm.h`
 - generic DRM support already present includes:
   `drm_exec`, `drm_gpuvm`, `drm_buddy`, TTM resource management, dma-resv,
-  dma-fence, sync_file
+  dma-fence, `dma_fence_chain`, `dma_fence_array`, `drm_sched`, and sync_file
 
 `freebsd-src-drm-6.12` / LinuxKPI:
 
@@ -113,6 +113,7 @@ Linux 6.12:
 - workqueue support exists
 - iosys-map exists
 - PCI helpers exist
+- runtime PM exists mostly as an always-on/stub-like interface
 - `linux/mmu_notifier.h` is currently dummy/partial
 - `linux/hmm.h` is dummy-only
 - `linux/mei_aux.h` is dummy-only
@@ -175,6 +176,9 @@ A separate review mentioned these symbols and concepts:
 Local verification against `../nx/linux-6.12` did not find `xe_svm.c`,
 `xe_svm.h`, `CONFIG_DRM_XE_GPUSVM`, `drm_gpusvm`, or `drm_pagemap`.
 
+External review also classified these as post-6.12/newer-Xe concepts rather
+than part of the local Linux 6.12 baseline.
+
 Please determine whether those are:
 
 - post-6.12 mainline Xe work
@@ -213,17 +217,20 @@ Linux 6.12 has `drivers/gpu/drm/xe/xe_gt_pagefault.c`.
 Local observations:
 
 - page-fault handling is gated by `xe->info.has_usm`
+- DG2/A380 also advertises `has_usm = 1`
 - Xe2/Battlemage sets `has_usm = 1`
 - `DRM_XE_VM_CREATE_FLAG_FAULT_MODE` requires hardware USM support
 - the page-fault handler can look up VMAs and rebind them
 - if the VMA is userptr, the fault path may repin userptr pages
 
-The early FreeBSD port must decide whether to:
+Current decision:
 
-- disable fault-mode VM creation initially
-- allow fault mode only for non-userptr BO-backed VMAs
-- fail page faults explicitly until the path is understood
-- keep the Linux 6.12 behavior and make the missing pieces real
+- disable fault-mode VM creation initially, including on DG2/A380
+- do not mask hardware `has_usm`
+- add an explicit FreeBSD support gate such as `xe_fault_mode_supported(xe)`
+- return `-EOPNOTSUPP` rather than creating a VM that can fault-loop
+
+Please challenge that decision if it is too conservative or technically wrong.
 
 ### Firmware and GSC path
 
@@ -300,10 +307,14 @@ Use Linux 6.12 Xe structure as much as possible, but stage the build/import:
    logging, and HECI GSC if they block initial bring-up.
 6. Explicitly make `MAP_USERPTR` / HMM-backed userptr unsupported at first
    because FreeBSD lacks real MMU interval notifier and HMM semantics.
-7. Bring up DG2/A380 first as a secondary GPU while Alder Lake iGPU remains
+7. Explicitly reject `DRM_XE_VM_CREATE_FLAG_FAULT_MODE` at first because
+   DG2/A380 also advertises `has_usm = 1`.
+8. Keep BO-backed explicit VM_BIND as an early target because Linux 6.12 HMM is
+   userptr-specific in the baseline source.
+9. Bring up DG2/A380 first as a secondary GPU while Alder Lake iGPU remains
    the stable `i915` display.
-8. Use Rocky Linux 10.1 as a Linux 6.12 operational A/B reference for Xe.
-9. Later use B580 as a Battlemage/Xe reference case, since Rocky 10.1 packages
+10. Use Rocky Linux 10.1 as a Linux 6.12 operational A/B reference for Xe.
+11. Later use B580 as a Battlemage/Xe reference case, since Rocky 10.1 packages
    `xe.ko`, has PCI alias `8086:E20B`, and includes BMG GuC/HuC firmware.
 
 ## Proposed Patch Split
@@ -340,14 +351,31 @@ First honest milestone:
 2. module load is real
 3. A380 PCI match/probe occurs
 4. attach starts without panic
-5. firmware paths resolve
-6. GuC/HuC-related firmware load gets far enough to diagnose real failures
-7. MMIO, GT, VRAM, and IRQ init complete or fail at a clearly understood point
-8. `drm_dev_register()` succeeds if the early init path gets far enough
-9. render node appears only after the above is stable
+5. MMIO BAR mapping succeeds
+6. VRAM probing reports a sane size and BAR aperture
+7. GuC firmware is found and loaded far enough to diagnose failures
+8. GuC CT initializes or fails at a clearly understood point
+9. GT init and IRQ setup complete or fail with useful logs
+10. `drm_dev_register()` succeeds if the early init path gets far enough
+11. render node appears only after the above is stable
 
 Userptr, HMM, display replacement, HECI GSC, SR-IOV, OA, relay logging, and
 full devcoredump parity are not required for the first milestone.
+
+Runtime semantic risks should be treated as first-class planning inputs:
+
+- `ww_mutex`, WITNESS, and `drm_exec`
+- workqueue flush/cancel and module unload behavior
+- `dma_fence`, `dma_fence_chain`, and `dma_fence_array`
+- `drm_sched`
+- TTM placement, eviction, and memory pressure behavior
+- PCI BAR, resize BAR, and VRAM mapping
+- `iosys-map` correctness for VRAM BAR access and WC/UC mappings
+- GuC CT buffer allocation and coherency
+- `devm_*` and `drmm_*` cleanup ordering
+- runtime PM stubbing
+- wait queues and signal/restart behavior
+- firmware path mapping and lifetime
 
 ## Testing Policy
 
@@ -362,6 +390,8 @@ For new project-owned tests:
   timing-sensitive, stress, mmap, BO, VM-bind, fence, sync-object, and minimal
   DRM userspace probes
 - when a test has both, Elixir should orchestrate and call Zig helper binaries
+- upstream-facing tests should prefer shell, Python, ATF, kyua, or existing
+  drm-kmod conventions
 
 Raw logs, RPMs, build artifacts, traces, VM images, and crash dumps should not
 be committed. Store them outside the repo, preferably in
@@ -404,7 +434,8 @@ Please answer as a skeptical reviewer.
    on those paths earlier than expected? Specifically, Linux 6.12 userptr uses
    `mmu_interval_notifier` and `hmm_range_fault`, and the page-fault handler
    can repin userptr VMAs. Can GPU page faults occur in the first milestone
-   without userptr enabled, and what should happen if they do?
+   without userptr enabled, should fault-mode VM creation be rejected at ioctl
+   time, and what should happen if faults still arrive?
 4. Is HECI GSC safe to stage after base attach/GT bring-up, or is there a
    hidden dependency that makes it an earlier blocker? Specifically, GSC
    creates an `auxiliary_device` through `mei_aux` infrastructure. If
@@ -423,8 +454,10 @@ Please answer as a skeptical reviewer.
    bugs rather than compile failures? Concrete candidates include dma-resv
    locking semantics, ww_mutex deadlock detection, drm_exec locking under
    FreeBSD witness, TTM placement and eviction under memory pressure,
-   dma_fence timeline signaling, sync_file fd lifecycle, and drm_gpuvm range
-   tracking under concurrent VM_BIND operations.
+   dma_fence timeline signaling, dma_fence_chain/array semantics, drm_sched,
+   sync_file fd lifecycle, drm_gpuvm range tracking under concurrent VM_BIND,
+   GuC CT buffer coherency, workqueue cancellation, devm/drmm cleanup ordering,
+   and runtime PM stubbing.
 10. What should the first 10 patches in an upstreamable series look like?
 11. What FreeBSD developer objections should this plan anticipate?
 12. Is the Rocky Linux 10.1 A/B strategy sound, and what extra data should be

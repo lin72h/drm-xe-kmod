@@ -113,6 +113,8 @@ The planning repo currently contains:
 - `docs/xe-freebsd-linux-ab-testing.md`
 - `docs/xe-freebsd-testing-policy.md`
 - `docs/repo-hygiene.md`
+- `docs/claude-feedback-integration.md`
+- `docs/xe-runtime-semantic-risks.md`
 - `docs/opus-glm-xe-port-review-prompt.md`
 - `RL10-xe.md`
 
@@ -174,7 +176,7 @@ Local findings:
 - `scripts/drmgeneratepatch` still excludes `include/uapi/drm/xe_drm.h`
 - common DRM helpers already present include:
   `drm_exec`, `drm_gpuvm`, `drm_buddy`, TTM resource support, dma-resv,
-  dma-fence, and sync_file
+  dma-fence, `dma_fence_chain`, `dma_fence_array`, `drm_sched`, and sync_file
 
 Important FreeBSD DRM files to inspect:
 
@@ -257,12 +259,14 @@ My current working theory is:
 3. Import enough of the non-display Xe core to be honest.
 4. Keep display out of the first serious bring-up if possible.
 5. Make userptr/HMM unsupported first.
-6. Stage HECI GSC / `mei_aux` after base device path if it can fail
+6. Reject fault-mode VM creation on FreeBSD at first, including on DG2/A380.
+7. Stage HECI GSC / `mei_aux` after base device path if it can fail
    gracefully.
-7. Use A380/DG2 as first hardware target.
-8. Keep Alder Lake iGPU on i915 as stable host display.
-9. Use Rocky Linux 10.1 as a Linux 6.12 operational A/B reference.
-10. Use B580/Battlemage as a later or parallel Xe2 reference case.
+8. Use A380/DG2 as first hardware target.
+9. Keep Alder Lake iGPU on i915 as stable host display.
+10. Use Rocky Linux 10.1 as a Linux 6.12 operational A/B reference.
+11. Use B580/Battlemage as a second target after A380, because GSC/CSCFI may
+    matter more there.
 
 ## Patch Split Theory
 
@@ -302,12 +306,13 @@ Candidate first honest milestone:
 1. `xe` builds as a FreeBSD kmod
 2. module load works
 3. A380 PCI match/probe occurs
-4. attach starts without panic
-5. firmware paths resolve
-6. GuC/HuC firmware load gets far enough to diagnose failures
-7. MMIO, GT, VRAM, and IRQ init complete or fail at a clearly understood point
-8. `drm_dev_register()` succeeds if init reaches that stage
-9. render node appears only after the above is stable
+4. MMIO BAR mapping succeeds
+5. VRAM probing reports a sane size and BAR aperture
+6. GuC firmware is found and loaded far enough to diagnose failures
+7. GuC CT initializes or fails at a clearly understood point
+8. GT init and IRQ setup complete or fail with useful logs
+9. `drm_dev_register()` succeeds if init reaches that stage
+10. render node appears only after the above is stable
 
 I need you to tell me if this milestone is too ambitious, too weak, or ordered
 wrong.
@@ -341,10 +346,16 @@ My current plan:
 - keep the cut Xe-local first
 - only add real HMM/MMU notifier support later as generic `freebsd-src` work
 
-Concern:
+External review finding:
 
-- Is there any unavoidable path where Xe's base VM or page-table machinery
-  depends on HMM/userptr even for BO-backed VM_BIND?
+- in Linux 6.12, `xe_hmm_userptr_populate_range()` is reached through userptr
+  paths
+- BO-backed explicit VM_BIND does not route through HMM
+
+Remaining concern:
+
+- Is there any secondary BO-backed path, such as fault-mode VM handling, that
+  still needs to be disabled before first submission?
 
 ### 2. SVM / GPUSVM confusion
 
@@ -365,14 +376,20 @@ GLM feedback mentioned:
 I checked the local `../nx/linux-6.12` tree and did not find `xe_svm.c`,
 `xe_svm.h`, `CONFIG_DRM_XE_GPUSVM`, `drm_gpusvm`, or `drm_pagemap`.
 
-Concern:
+External review finding:
 
-- Are these post-6.12 Xe developments?
-- Are they in Rocky/RHEL downstream kernels?
-- Are they 6.12.y LTS backports?
-- Are they from a separate future branch?
-- Should they be ignored for first port planning, or explicitly tracked as
-  later backport candidates?
+- these appear to be post-6.12 Xe developments, likely from Linux master/newer
+  cycles, not the 6.12 baseline
+
+Decision:
+
+- ignore SVM/GPUSVM for Phase 1 port planning
+- track only as possible explicit future backports
+
+Question:
+
+- is there any reason SVM/GPUSVM should affect the first 6.12 FreeBSD port
+  despite not existing in the local 6.12 reference tree?
 
 ### 3. Explicit VM_BIND without userptr
 
@@ -394,6 +411,7 @@ Linux 6.12 has `xe_gt_pagefault.c`.
 Local observations:
 
 - page-fault handling is gated by `xe->info.has_usm`
+- DG2/A380 also advertises `has_usm = 1`
 - Xe2/Battlemage sets `has_usm = 1`
 - `DRM_XE_VM_CREATE_FLAG_FAULT_MODE` requires `has_usm`
 - page-fault handling can rebind VMAs
@@ -405,6 +423,12 @@ Concern:
 - Can fault-mode be allowed only for BO-backed VMAs?
 - If GPU page faults arrive before the path is ready, what is the honest
   failure behavior?
+
+Current decision:
+
+- reject `DRM_XE_VM_CREATE_FLAG_FAULT_MODE` on FreeBSD initially
+- do not mask hardware `has_usm`; add an explicit FreeBSD support gate
+- prefer `-EOPNOTSUPP` over creating a VM that can fault-loop
 
 ### 5. HECI GSC / MEI auxiliary device
 
@@ -428,6 +452,12 @@ Concern:
 - Is it enough that `xe_heci_gsc_init` returns `void`, or do later paths
   assume the aux device exists?
 - Does Battlemage/B580 make GSC more mandatory than DG2/A380?
+
+External review finding:
+
+- HECI GSC can be staged for A380
+- missing GSC likely means HuC authentication and media paths are incomplete
+- B580/Battlemage may make GSC/CSCFI more important, so it should follow A380
 
 ### 6. Display entanglement
 
@@ -466,12 +496,16 @@ Risk areas:
 - VRAM BAR and resize BAR behavior
 - PCI resource mapping and cache attributes
 - dma-fence timeline signaling
+- dma_fence_chain and dma_fence_array semantics
+- drm_sched scheduling and timeout behavior
 - sync_file fd lifecycle
 - drm_gpuvm range tracking under concurrent VM_BIND
+- GuC CT buffer coherency and DMA visibility
 - module unload while fences/workqueues/timers are active
 - devm/drmm cleanup ordering under attach failure
 - firmware request lifetime and error paths
 - workqueue/taskqueue semantic mismatch
+- wait_event_interruptible and signal/restart behavior
 - interrupt masking/unmasking and MSI/MSI-X behavior
 - runtime PM and power-management assumptions
 - reset/recovery paths
@@ -532,6 +566,9 @@ New project-owned tests:
   timing-sensitive, stress, mmap, BO, VM_BIND, fence, sync-object, and minimal
   DRM userspace probes
 - when mixed, Elixir orchestrates and calls Zig helper binaries
+
+Upstream-facing tests should still use FreeBSD-friendly conventions such as
+shell, Python, ATF, kyua, or existing `drm-kmod` patterns.
 
 Concern:
 

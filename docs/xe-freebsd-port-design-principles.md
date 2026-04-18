@@ -51,6 +51,11 @@ performance-insensitive project tests use Elixir; new performance-sensitive or
 low-level tests use Zig.
 See [xe-freebsd-testing-policy.md](xe-freebsd-testing-policy.md).
 
+External review feedback is integrated in:
+
+- [claude-feedback-integration.md](claude-feedback-integration.md)
+- [xe-runtime-semantic-risks.md](xe-runtime-semantic-risks.md)
+
 ## What the History Shows
 
 ### 1. LinuxKPI grows in small, exact increments
@@ -191,8 +196,12 @@ Design rule:
 
 - do not fake HMM or interval-notifier support
 - make `DRM_XE_VM_BIND_OP_MAP_USERPTR` explicitly unsupported at first
+- reject `DRM_XE_VM_CREATE_FLAG_FAULT_MODE` at first even on DG2/A380, because
+  DG2 advertises `has_usm = 1`
 - keep the early cut local to Xe in `drm-kmod-6.12`
 - treat real userptr enablement as a later, separate LinuxKPI MM effort
+- keep BO-backed explicit VM_BIND as an early target because Linux 6.12 HMM is
+  userptr-specific in the baseline source
 
 ### 2. HECI GSC should be staged, not made day-one success criteria
 
@@ -206,6 +215,8 @@ Design rule:
 
 - do not block the first real attach milestone on full HECI GSC support
 - stage auxiliary-bus and `mei_aux` work separately if it proves reusable
+- accept that A380 media/HuC paths may be incomplete until GSC is real
+- treat B580/Battlemage as a second target because CSCFI/GSC may matter more
 
 ### 3. Relay logging and devcoredump completeness are secondary
 
@@ -294,9 +305,11 @@ The first hardware milestone should be:
 
 1. `xe` builds and loads
 2. DG2/A380 probes and attaches
-3. firmware loading is real enough to initialize the device
-4. MMIO, GT, VRAM, and IRQ init complete without panic
-5. `drm_dev_register()` succeeds
+3. MMIO BAR mapping and VRAM probing are real
+4. GuC firmware and GuC CT reach a diagnosable state
+5. GT and IRQ init complete or fail with useful logs
+6. `drm_dev_register()` succeeds if initialization reaches that stage
+7. render node appears only after the lower milestones are stable
 
 ### Phase F: compare against a Linux 6.12 operational oracle
 
@@ -321,6 +334,18 @@ The first hardware milestone should be:
 - keep the detailed policy in
   [xe-freebsd-testing-policy.md](xe-freebsd-testing-policy.md)
 
+### Phase H: audit runtime semantics before code
+
+- verify `drm_sched` APIs against Linux 6.12
+- verify `dma_fence_chain` and `dma_fence_array`, not only generic
+  `dma-fence`
+- validate `iosys-map` behavior for VRAM BAR mappings and WC/UC access
+- validate PCI resize-BAR behavior for A380
+- audit `devm_*` and `drmm_*` cleanup ordering
+- audit workqueue flush/cancel semantics under load/unload
+- treat runtime PM as always-on initially
+- maintain [xe-runtime-semantic-risks.md](xe-runtime-semantic-risks.md)
+
 ## What Not To Do
 
 - do not turn Xe into a DMO or DMI experiment
@@ -336,6 +361,9 @@ The first hardware milestone should be:
 - do not tie the first milestone to host display replacement
 - do not rewrite existing tests into Elixir or Zig just because new
   project-owned tests prefer those languages
+- do not let Phase 2 DMO/DMI architecture vocabulary leak into Xe patches
+- do not include post-6.12 SVM/GPUSVM work unless it is explicitly chosen as a
+  documented backport
 
 ## Review Discipline
 
@@ -348,6 +376,7 @@ Each future Xe patch should answer:
 5. If Linux A/B data exists, does FreeBSD fail before, at, or after the same
    Rocky/RHEL 10.x Xe milestone?
 6. Which existing tests still pass, and which new Elixir or Zig tests were run?
+7. Which runtime semantic risk does this patch reduce or expose?
 
 ## Final Rule
 

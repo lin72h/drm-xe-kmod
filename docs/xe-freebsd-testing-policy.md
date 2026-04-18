@@ -219,6 +219,8 @@ That means:
   clearly project-owned and external to upstream FreeBSD's normal test suite
 - use Elixir and Zig mainly for our reproducible bring-up lab, A/B harnesses,
   and driver-facing tools
+- prefer shell, Python, ATF, kyua, or existing drm-kmod conventions for tests
+  that are meant to be submitted upstream
 
 The language policy is a project testing policy, not a demand that FreeBSD
 upstream adopt Elixir or Zig inside base.
