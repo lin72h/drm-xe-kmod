@@ -56,6 +56,7 @@ Detailed strategy:
 Recent OPUS/GLM source-role findings:
 
 - [xe-recent-opus-glm-findings.md](xe-recent-opus-glm-findings.md)
+- [opus-xe-port-red-team-review.md](opus-xe-port-red-team-review.md)
 
 Recent compile-bootstrap findings:
 
@@ -196,6 +197,8 @@ Additional early-path facts now verified in Linux 6.12:
   or be stubbed/staged cleanly for first registration
 - `xe_guc_hwconfig_init()` performs the concrete early MMIO proof through
   `XE_GUC_ACTION_GET_HWCONFIG`
+- `guc_ct_control_toggle()` is the MMIO bootstrap step that enables CT after
+  the CT buffers are allocated and GGTT-pinned
 - the first good blocking CT round-trip candidate is
   `pc_action_query_task_state()` in `xe_guc_pc.c`, not a made-up ping
 
@@ -312,16 +315,18 @@ ownership conflicts on the host display GPU.
 6. Early GuC MMIO `GET_HWCONFIG` communication succeeds.
 7. `xe_sa` suballocator setup succeeds.
 8. ADS setup reaches a known ready/fail state.
-9. CT buffer allocation, GGTT pinning, and CT enable work.
-10. One existing blocking CT request/reply succeeds or fails at a clearly
+9. CT buffer allocation and GGTT pinning work.
+10. `guc_ct_control_toggle()` succeeds and CT reaches a known enabled or
+    diagnosable failed state.
+11. One existing blocking CT request/reply succeeds or fails at a clearly
     understood point.
-11. IRQ dispatch is stable and unload/reload does not leave leaked
-    IRQ/workqueue/render-node state.
 12. `xe_pcode` mailbox path behaves correctly.
 13. GT init and IRQ setup complete without panic, or fail with a useful trace.
-14. `xe_oa_init()` is stubbed or succeeds so registration can proceed.
-15. `drm_dev_register()` succeeds if initialization reaches that stage.
-16. The render node appears only after the lower milestones are stable.
+14. IRQ dispatch is stable and unload/reload does not leave leaked
+    IRQ/workqueue/render-node state.
+15. `xe_oa_init()` is stubbed or succeeds so registration can proceed.
+16. `drm_dev_register()` succeeds if initialization reaches that stage.
+17. The render node appears only after the lower milestones are stable.
 
 For each milestone, capture a paired Rocky Linux 10.x A/B log when practical.
 The comparison should show whether FreeBSD fails before, at, or after the same
@@ -379,6 +384,7 @@ Put changes here when they are Xe-specific:
 Detailed ladder:
 
 - [xe-recent-opus-glm-findings.md](xe-recent-opus-glm-findings.md)
+- [opus-xe-port-red-team-review.md](opus-xe-port-red-team-review.md)
 
 ## Final Stage-0 Summary
 
@@ -391,6 +397,7 @@ That makes the corrected first strategy:
 
 - make the import compile and link first
 - prove MMIO `GET_HWCONFIG` before CT
+- prove `guc_ct_control_toggle()` before the first true blocking CT exchange
 - import Xe mostly intact
 - defer userptr honestly
 - stage HECI GSC and other secondary paths

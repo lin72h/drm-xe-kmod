@@ -187,18 +187,28 @@ For early A380 and B580 testing, prefer this order:
 5. MMIO BAR access works
 6. firmware paths resolve
 7. early GuC MMIO `GET_HWCONFIG` proof succeeds
-8. ADS minimal setup succeeds
-9. GuC CT buffer allocation, GGTT pinning, and CT enable work
-10. one existing blocking CT request/reply succeeds or fails with useful
+8. `xe_sa` suballocator setup succeeds
+9. ADS minimal setup succeeds
+10. GuC CT buffer allocation and GGTT pinning work
+11. `guc_ct_control_toggle()` returns success and CT reaches a known enabled or
+    diagnosable failed state
+12. one existing blocking CT request/reply succeeds or fails with useful
     classification
-11. unload/reload leaves no leaked IRQ, workqueue, or render-node state
-12. BO allocation, map, and fault sanity works
-13. BO-backed VM_BIND works with fault mode disabled
-14. basic submission works and fence signals
-15. memory-pressure and eviction smoke tests begin
+13. unload/reload leaves no leaked IRQ, workqueue, or render-node state
+14. BO allocation, map, and fault sanity works
+15. BO-backed VM_BIND works with fault mode disabled
+16. basic submission works and fence signals
+17. memory-pressure and eviction smoke tests begin
 
 Do not run performance tests as the primary signal before the lower milestones
 are stable.
+
+For CT specifically, keep the proofs distinct:
+
+- `GET_HWCONFIG` is the first MMIO transport proof
+- `guc_ct_control_toggle()` is the CT-enable bootstrap proof
+- the first blocking CT request/reply should be an existing Linux 6.12 path,
+  not a custom ping
 
 ## Linux Xe Tests To Mirror
 

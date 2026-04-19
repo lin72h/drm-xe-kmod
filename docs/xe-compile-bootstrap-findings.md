@@ -216,23 +216,29 @@ links cleanly
 
 2b. MMIO communication with GuC succeeds
 
-2c. ADS setup succeeds
+2c. `xe_sa` suballocator setup succeeds
 
-2d. CT buffer allocation and GGTT pinning succeed
+2d. ADS setup succeeds
 
-2e. first fire-and-forget H2G CT message succeeds
+2e. CT buffer allocation and GGTT pinning succeed
 
-2f. first blocking H2G/G2H exchange succeeds
+2f. `guc_ct_control_toggle()` succeeds and CT reaches a known enabled or
+    diagnosable failed state
 
-2g. GT init and IRQ setup complete
+2g. first blocking H2G/G2H exchange succeeds
+
+2h. GT init and IRQ setup complete
 
 ### Phase 3: DRM registration
 
-3a. `drm_dev_register()` succeeds with display disabled
+3a. `xe_oa_init()` is stubbed or otherwise kept non-blocking for the first
+registration path
 
-3b. render node appears
+3b. `drm_dev_register()` succeeds with display disabled
 
-3c. minimal `xe_drm.h` ioctls are reachable from userspace
+3c. render node appears
+
+3d. minimal `xe_drm.h` ioctls are reachable from userspace
 
 ### Phase 4: BO, memory, and VM
 
@@ -272,18 +278,21 @@ The plan should not skip the MMIO proof step between firmware load and CT.
 
 ## Recommended First CT Checks
 
-Recommended first fire-and-forget CT test:
+Recommended first CT-enable bootstrap proof:
 
-- `pc_action_reset()` in `xe_guc_pc.c`
+- `guc_ct_control_toggle()` in `xe_guc_ct.c`
+- it uses MMIO `GUC_ACTION_HOST2GUC_CONTROL_CTB` after CT buffers exist
 
 Recommended first blocking CT test:
 
-- `xe_guc_auth_huc()` in `xe_guc.c`
+- `pc_action_query_task_state()` in `xe_guc_pc.c`
 
 The reason is simple:
 
-- `pc_action_reset()` is small and exercises H2G send
-- `xe_guc_auth_huc()` exercises both H2G and G2H handling
+- `guc_ct_control_toggle()` proves firmware is alive and CT reached the enable
+  step through the real Linux 6.12 bootstrap path
+- `pc_action_query_task_state()` is an existing blocking CT exchange rather
+  than a custom ping
 
 ## Earliest Falsification Test
 
@@ -298,4 +307,3 @@ the runtime plan is premature.
 
 Do not treat compile bootstrap as routine glue work.
 For Xe on FreeBSD 6.12, compile bootstrap is Phase 0 engineering.
-

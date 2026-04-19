@@ -57,6 +57,7 @@ External review feedback is integrated in:
 - [xe-compile-bootstrap-findings.md](xe-compile-bootstrap-findings.md)
 - [xe-recent-opus-glm-findings.md](xe-recent-opus-glm-findings.md)
 - [xe-runtime-semantic-risks.md](xe-runtime-semantic-risks.md)
+- [opus-xe-port-red-team-review.md](opus-xe-port-red-team-review.md)
 
 ## What the History Shows
 
@@ -254,6 +255,12 @@ Current best candidate:
 
 - `pc_action_query_task_state()` in `xe_guc_pc.c`
 
+Before that blocking exchange, the first CT-enable proof should be:
+
+- `guc_ct_control_toggle()` in `xe_guc_ct.c`
+- it uses MMIO `GUC_ACTION_HOST2GUC_CONTROL_CTB` to enable CT after CT buffers
+  are allocated and GGTT-pinned
+
 ### 4. HECI GSC should be staged, not made day-one success criteria
 
 Local truth:
@@ -367,6 +374,9 @@ Likely first deferrals:
 If OA is deferred, the FreeBSD cut must still let `xe_oa_init()` return
 success in the init path so `drm_dev_register()` remains reachable.
 
+If display is deferred, compile it out with `CONFIG_DRM_XE_DISPLAY=n` and keep
+the `display/xe_display.h` stub path available to the import.
+
 ### Phase F: target the first honest hardware milestone
 
 The first hardware milestone should be:
@@ -379,14 +389,15 @@ The first hardware milestone should be:
 6. early MMIO `GET_HWCONFIG` communication succeeds
 7. `xe_sa` suballocator setup reaches a known ready/fail state
 8. ADS setup reaches a known ready/fail state
-9. CT buffer allocation, GGTT pinning, and CT enable work
-10. one existing blocking CT round-trip succeeds or fails with useful logs
-11. unload/reload leaves no leaked IRQ, workqueue, or render-node state
+9. CT buffer allocation and GGTT pinning work
+10. `guc_ct_control_toggle()` succeeds and CT enable reaches a known state
+11. one existing blocking CT round-trip succeeds or fails with useful logs
 12. `xe_pcode` mailbox paths behave correctly
 13. GT and IRQ init complete or fail with useful logs
-14. `xe_oa_init()` is stubbed or succeeds so registration can proceed
-15. `drm_dev_register()` succeeds if initialization reaches that stage
-16. render node appears only after the lower milestones are stable
+14. unload/reload leaves no leaked IRQ, workqueue, or render-node state
+15. `xe_oa_init()` is stubbed or succeeds so registration can proceed
+16. `drm_dev_register()` succeeds if initialization reaches that stage
+17. render node appears only after the lower milestones are stable
 
 ### Phase G: compare against a Linux 6.12 operational oracle
 
@@ -460,6 +471,16 @@ The first hardware milestone should be:
   documented backport
 
 ## Review Discipline
+
+The current concrete patch-series reference is a 28-patch, four-phase skeleton
+in [opus-xe-port-red-team-review.md](opus-xe-port-red-team-review.md):
+
+- generic `freebsd-src-drm-6.12` prerequisites first
+- `drm-kmod-6.12` Xe scaffolding and UAPI import second
+- non-display Xe core import third
+- FreeBSD adaptation points such as OA, GSC, HMM, and relay last
+
+Use that as a review shape, not a rigid delivery promise.
 
 Each future Xe patch should answer:
 

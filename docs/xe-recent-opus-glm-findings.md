@@ -8,6 +8,7 @@ This memo integrates the recent parent-agent OPUS/GLM briefing from:
 
 - `../wip-gpt/docs/xe-agent-recent-findings.md`
 - `../wip-gpt/docs/source-lx-s32.md`
+- [opus-xe-port-red-team-review.md](opus-xe-port-red-team-review.md)
 
 It records only the parts that should shape the FreeBSD Xe port.
 The DMO/DMI architecture material remains background and must not become a
@@ -67,8 +68,9 @@ The smallest honest A380 GuC/CT path is:
 1. GuC ABI headers under `drivers/gpu/drm/xe/abi/guc_*_abi.h`
 2. `xe_uc_fw.c` for firmware load and validation
 3. `xe_uc.c` and `xe_guc.c` for UC / GuC lifecycle
-4. `xe_guc_ads.c` for ADS setup
-5. `xe_guc_ct.c` for CT communication
+4. `xe_sa.c` for the suballocator used by ADS and CT buffers
+5. `xe_guc_ads.c` for ADS setup
+6. `xe_guc_ct.c` for CT communication
 
 `xe_guc_submit.c` is direct Xe DRM-lane porting work, but it should come after
 CT is proven because it depends on `drm_sched`, `dma_fence`, exec queue
@@ -90,6 +92,19 @@ That means:
 
 - CT is not the first transport primitive
 - CT is still the first serious shared-memory runtime gate
+
+The next concrete CT-bootstrap proof is:
+
+- `guc_ct_control_toggle()` in `xe_guc_ct.c`
+- it sends `GUC_ACTION_HOST2GUC_CONTROL_CTB` through `xe_guc_mmio_send()`
+- a zero return means firmware is alive and the CT buffers were allocated and
+  pinned far enough to enable CT
+
+That is still MMIO bootstrap, not the first true CT round-trip.
+The first existing blocking CT round-trip should remain:
+
+- `pc_action_query_task_state()` in `xe_guc_pc.c`
+- it exercises `xe_guc_ct_send_block()` after CT is enabled
 
 `xe_guc_ct.c` allocates its CT buffer through the Xe BO path, using system
 memory and GGTT pinning.
@@ -168,6 +183,10 @@ Additional verified init-path notes:
   wait-path risk into early bring-up
 - `xe_sa` suballocation sits under CT and ADS, so CT/ADS work also depends on
   the suballocator being alive
+- `xe_pcode` mailbox waits use `wait_event_timeout` plus MMIO polling and can
+  stall silently if FreeBSD timeout or wake semantics diverge
+- the display-off path is clean only when `CONFIG_DRM_XE_DISPLAY=n` and the
+  stub header path from `display/xe_display.h` is available to the import
 
 The parent kernel review adds one more practical warning:
 
@@ -229,7 +248,8 @@ Use this as the first detailed ladder:
 9. `xe_sa` suballocator setup succeeds
 10. ADS setup succeeds
 11. CT buffer allocation and GGTT pinning work
-12. CT enable succeeds
+12. `guc_ct_control_toggle()` succeeds and CT enable reaches a known
+    ready/fail state
 13. one existing blocking CT round-trip succeeds
 14. IRQ dispatch works without WITNESS violations
 15. unload/reload leaves no leaked IRQ, workqueue, or devfs/render-node state
@@ -272,6 +292,21 @@ These tests are designed to disprove weak assumptions quickly:
    work.
 7. Run BO allocation plus eviction under memory pressure. If BOs corrupt or
    become inaccessible, the TTM/FreeBSD VM integration is not ready.
+
+## Patch-Series Shape
+
+The red-team review now leaves behind a concrete 28-patch skeleton:
+
+- Phase 0: `freebsd-src-drm-6.12` generic prerequisites
+- Phase 1: `drm-kmod-6.12` Xe scaffolding and UAPI import
+- Phase 2: non-display Xe core import
+- Phase 3: FreeBSD adaptation points such as OA, HECI GSC, HMM, and relay
+
+Treat that series as a review aid, not a rigid promise.
+The key rule remains:
+
+- generic LinuxKPI and DRM semantics first
+- Xe-local cuts and staging in `drm-kmod-6.12`
 
 ## Tests To Mirror
 

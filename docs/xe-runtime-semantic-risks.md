@@ -23,7 +23,36 @@ One additional correction from the parent kernel review:
 The CT and BO path are still the first major runtime proofs, but operational
 bring-up risk should be ranked with unwind and teardown semantics at the top.
 
-## Highest Risk Areas
+## Operational Priority
+
+Highest operational risk after compile/bootstrap:
+
+1. `devm_*` / `drmm_*` cleanup ordering on attach failure and unload
+2. IRQ and threaded-IRQ semantics, especially fence signaling from interrupt
+   context
+3. workqueue flush/cancel and self-rescheduling behavior
+4. `ww_mutex` / WITNESS / `drm_exec`
+5. TTM placement, eviction, mmap fault, and memory-pressure behavior
+6. busdma / IOMMU / cache-attribute correctness for CT, GGTT, and VRAM
+   mappings
+7. runtime PM stubs lying about device state
+8. wait-event wake and restart semantics, including `xe_pcode` mailbox waits
+9. firmware loading path and lifetime semantics
+10. `drm_gpuvm` concurrent range tracking under VM_BIND
+11. `sync_file` / fd lifetime
+12. MSI/MSI-X vector setup and teardown
+
+Still-critical first-runtime-proof dependencies:
+
+1. TTM BO allocation and placement
+2. GGTT pinning and aperture mapping
+3. `xe_sa` suballocation under ADS and CT
+4. GuC CT buffer allocation and coherency
+5. PCI BAR / MMIO / cache attributes
+6. `xe_oa_init()` being stubbed or otherwise kept non-blocking for first
+   registration
+
+## Subsystem Risk Areas
 
 ### 1. TTM BO Allocation And Placement
 
@@ -85,6 +114,23 @@ Required checks:
 - verify CT buffer GGTT pinning and invalidation before submission tests
 - send at least one H2G message and classify whether G2H response handling,
   IRQ dispatch, or firmware status is the blocker
+
+### 3a. `xe_sa` Suballocation Under ADS And CT
+
+`xe_sa` is a thin layer, but it sits directly between BO allocation and the ADS
+and CT buffer users.
+
+Risk:
+
+- CT or ADS can fail even when raw BO allocation works
+- sub-allocation alignment or mapping errors can look like CT or firmware bugs
+- the first runtime ladder is wrong if it assumes CT uses only plain BO paths
+
+Required checks:
+
+- bring up `xe_sa` explicitly before treating ADS or CT as isolated steps
+- compare `xe_sa_bo_manager_init()` behavior with Linux 6.12
+- classify early ADS or CT allocation failures against `xe_sa`, not only TTM
 
 ### 4. PCI BAR, MMIO, And Cache Attributes
 
@@ -206,6 +252,23 @@ Required checks:
 - audit DRM `drmm_*` action ordering
 - force early attach failures and verify cleanup is stable
 
+### 10a. `xe_oa_init()` As Registration Gate
+
+`xe_oa_init()` sits before `drm_dev_register()` and returns an error code.
+That makes it a bring-up gate, not a distant feature.
+
+Risk:
+
+- first registration can fail even when the rest of the render-only path is
+  alive
+- a deferred OA plan that does not stub `xe_oa_init()` cleanly will block the
+  first useful milestone
+
+Required checks:
+
+- keep a FreeBSD OA stub plan explicit in the first import
+- verify any staged cut still leaves `xe_oa_init()` returning success
+
 ### 11. Runtime PM
 
 FreeBSD's LinuxKPI runtime PM support is mostly stub-like.
@@ -238,6 +301,22 @@ Required checks:
 - audit `xe_pcode` mailbox waits and any early init polling loops that rely on
   timeout semantics
 
+### 12a. `xe_pcode` Mailbox Waits
+
+`xe_pcode` is in the GT init path and combines MMIO polling with
+`wait_event_timeout`.
+
+Risk:
+
+- GT init can stall silently if timeout or wake semantics diverge
+- MMIO correctness bugs can be misread as waitqueue bugs, and vice versa
+
+Required checks:
+
+- trace the pcode mailbox path during first GT init attempts
+- compare timeout behavior against Linux 6.12 on the same hardware
+- treat pcode stalls as first-milestone failures, not later polish items
+
 ### 13. Firmware Loading And Paths
 
 Linux expects firmware under Linux paths such as `/lib/firmware/xe/`.
@@ -269,32 +348,6 @@ Required checks:
 
 - audit `sync_file` reference handling in `drm-kmod`
 - test close/dup/wait behavior once submission works
-
-## Initial Risk Ranking
-
-Highest operational risk after compile/bootstrap:
-
-1. `devm_*` / `drmm_*` cleanup ordering on attach failure and unload
-2. IRQ and threaded-IRQ semantics, especially fence signaling from interrupt
-   context
-3. workqueue flush/cancel and self-rescheduling behavior
-4. `ww_mutex` / WITNESS / `drm_exec`
-5. TTM placement, eviction, mmap fault, and memory-pressure behavior
-6. busdma / IOMMU / cache-attribute correctness for CT, GGTT, and VRAM
-   mappings
-7. runtime PM stubs lying about device state
-8. wait-event wake and restart semantics
-9. firmware loading path and lifetime semantics
-10. `drm_gpuvm` concurrent range tracking under VM_BIND
-11. `sync_file` / fd lifetime
-12. MSI/MSI-X vector setup and teardown
-
-Still-critical first-runtime-proof dependencies:
-
-1. TTM BO allocation and placement
-2. GGTT pinning and aperture mapping
-3. GuC CT buffer allocation and coherency
-4. PCI BAR / MMIO / cache attributes
 
 Additional missing-risk reminders:
 
