@@ -45,11 +45,11 @@ Compile/bootstrap blockers are now tracked separately in:
 
 - [xe-compile-bootstrap-findings.md](xe-compile-bootstrap-findings.md)
 
-## Highest-Value Runtime Finding: MMIO First, CT Second
+## Highest-Value Runtime Finding: GET_HWCONFIG MMIO First, CT Second
 
 The earlier CT-first wording needs one refinement:
 
-- MMIO is the first firmware transport proof
+- MMIO GuC messaging is the first transport proof
 - GuC command transport is the first shared-memory runtime gate before
   submission
 
@@ -57,7 +57,8 @@ Do not start by proving submission.
 First prove that the driver can:
 
 1. load firmware
-2. complete early MMIO communication with GuC
+2. complete early MMIO communication with GuC, specifically the
+   `GET_HWCONFIG` path in `xe_guc_hwconfig.c`
 3. allocate and pin the CT buffer
 4. exchange at least one H2G/G2H message with GuC
 
@@ -78,6 +79,17 @@ lifetime, GuC IDs, and Linux object ownership.
 CT registration itself depends on earlier MMIO communication.
 If early MMIO transport is wrong, CT will fail later for reasons that are easy
 to misclassify.
+
+The most important concrete MMIO proof in Linux 6.12 is:
+
+- `xe_guc_hwconfig_init()` in `xe_guc_hwconfig.c`
+- it sends `XE_GUC_ACTION_GET_HWCONFIG` through `xe_guc_mmio_send()`
+- it also exercises a minimal managed BO plus GGTT target for the hwconfig copy
+
+That means:
+
+- CT is not the first transport primitive
+- CT is still the first serious shared-memory runtime gate
 
 `xe_guc_ct.c` allocates its CT buffer through the Xe BO path, using system
 memory and GGTT pinning.
@@ -157,6 +169,12 @@ Additional verified init-path notes:
 - `xe_sa` suballocation sits under CT and ADS, so CT/ADS work also depends on
   the suballocator being alive
 
+The parent kernel review adds one more practical warning:
+
+- init/unwind behavior is the first place the port is likely to go wrong
+- attach failure, unload, IRQ teardown, workqueue drain, and partial GT/UC init
+  must be treated as first-class bring-up paths, not later hardening
+
 ## HMM / USM Remains Out Of First Bring-Up
 
 The first bring-up must reject or disable:
@@ -206,21 +224,23 @@ Use this as the first detailed ladder:
 4. A380 PCI probe fires through `xe_pci.c`
 5. MMIO BAR access works through `xe_mmio.c`
 6. firmware load and validation works through `xe_uc_fw.c`
-7. early MMIO communication with GuC succeeds
+7. early MMIO communication with GuC succeeds through `GET_HWCONFIG`
 8. UC / GuC lifecycle reaches a known ready/fail state
 9. `xe_sa` suballocator setup succeeds
 10. ADS setup succeeds
 11. CT buffer allocation and GGTT pinning work
-12. CT H2G/G2H ping-pong succeeds
-13. IRQ dispatch works without WITNESS violations
-14. `xe_pcode` mailbox path behaves correctly
-15. `xe_oa_init()` is stubbed or succeeds so registration can proceed
-16. BO allocation/free works for system and local memory
-17. GGTT insertion works for CT and simple objects
-18. explicit BO-backed VM_BIND succeeds without HMM/userptr
-19. simple exec queue create/destroy succeeds
-20. basic job submission completes and fence signals
-21. memory pressure / eviction smoke tests run without corrupting BOs
+12. CT enable succeeds
+13. one existing blocking CT round-trip succeeds
+14. IRQ dispatch works without WITNESS violations
+15. unload/reload leaves no leaked IRQ, workqueue, or devfs/render-node state
+16. `xe_pcode` mailbox path behaves correctly
+17. `xe_oa_init()` is stubbed or succeeds so registration can proceed
+18. BO allocation/free works for system and local memory
+19. GGTT insertion works for CT and simple objects
+20. explicit BO-backed VM_BIND succeeds without HMM/userptr
+21. simple exec queue create/destroy succeeds
+22. basic job submission completes and fence signals
+23. memory pressure / eviction smoke tests run without corrupting BOs
 
 Every failure should be classified as one of:
 
@@ -237,16 +257,20 @@ These tests are designed to disprove weak assumptions quickly:
 
 1. `xe.ko` links without unresolved symbols. If it does not, the import and
    support surface are still incomplete.
-2. Load `xe.ko`, probe A380, load GuC firmware, and reach CT-ready without
-   DMO. If this requires DMO, the project boundary is wrong.
-3. Allocate the CT BO, GGTT-pin it, and send one CT message. If this fails,
-   focus on BO/GGTT/TTM/LinuxKPI before submission.
-4. Create a BO-backed VM_BIND path with fault mode disabled. If this requires
+2. Load `xe.ko`, probe A380, load GuC firmware, and complete MMIO
+   `GET_HWCONFIG` without DMO. If this requires DMO, the project boundary is
+   wrong.
+3. Allocate the CT BO, GGTT-pin it, enable CT, and complete one existing
+   blocking CT request/reply. If this fails, focus on BO/GGTT/TTM/LinuxKPI,
+   MMIO, or IRQ/G2H before submission.
+4. Unload and reload after the MMIO/CT path. If IRQ, workqueue, devm/drmm, or
+   render-node state leaks, the unwind model is wrong.
+5. Create a BO-backed VM_BIND path with fault mode disabled. If this requires
    HMM or MMU notifiers, the explicit-bind assumption is wrong.
-5. Signal a `dma_fence` from the GPU completion or IRQ path under WITNESS. If
+6. Signal a `dma_fence` from the GPU completion or IRQ path under WITNESS. If
    this deadlocks or violates lock order, the LinuxKPI fence/IRQ bridge needs
    work.
-6. Run BO allocation plus eviction under memory pressure. If BOs corrupt or
+7. Run BO allocation plus eviction under memory pressure. If BOs corrupt or
    become inaccessible, the TTM/FreeBSD VM integration is not ready.
 
 ## Tests To Mirror

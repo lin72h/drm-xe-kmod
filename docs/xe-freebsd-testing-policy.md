@@ -186,18 +186,16 @@ For early A380 and B580 testing, prefer this order:
 4. attach starts
 5. MMIO BAR access works
 6. firmware paths resolve
-7. early GuC MMIO communication succeeds
-8. GuC firmware load and ADS setup reach known ready/fail states
-9. GuC CT buffer allocation and GGTT pinning work
-10. CT H2G/G2H exchange succeeds or fails with useful classification
-11. IRQ mode is established without WITNESS violations
-12. DRM device registration succeeds
-13. render node appears
-14. simple query ioctl succeeds
-15. BO allocation/free works for system and local memory
-16. BO-backed VM_BIND works with fault mode disabled
-17. basic submission works and fence signals
-18. memory-pressure and eviction smoke tests begin
+7. early GuC MMIO `GET_HWCONFIG` proof succeeds
+8. ADS minimal setup succeeds
+9. GuC CT buffer allocation, GGTT pinning, and CT enable work
+10. one existing blocking CT request/reply succeeds or fails with useful
+    classification
+11. unload/reload leaves no leaked IRQ, workqueue, or render-node state
+12. BO allocation, map, and fault sanity works
+13. BO-backed VM_BIND works with fault mode disabled
+14. basic submission works and fence signals
+15. memory-pressure and eviction smoke tests begin
 
 Do not run performance tests as the primary signal before the lower milestones
 are stable.
@@ -226,6 +224,13 @@ Skip for the first A380 milestone:
 
 These are relay-specific, SR-IOV-specific, or too KUnit-specific for first
 bring-up.
+
+Add FreeBSD-specific project tests that Linux KUnit does not cover well:
+
+- attach-failure fault-injection tests
+- unload/reload hardening tests
+- IRQ/workqueue leak checks after failed init
+- render-node/devfs lifetime checks on unload
 
 ## CI and Review Policy
 

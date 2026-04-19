@@ -14,6 +14,15 @@ Compile and link blockers are tracked separately in:
 
 - [xe-compile-bootstrap-findings.md](xe-compile-bootstrap-findings.md)
 
+One additional correction from the parent kernel review:
+
+> The most likely early failure mode is not a missing symbol.
+> It is attach failure, unload, IRQ, workqueue, fence, TTM, and cleanup
+> ordering behaving almost-right and corrupting state.
+
+The CT and BO path are still the first major runtime proofs, but operational
+bring-up risk should be ranked with unwind and teardown semantics at the top.
+
 ## Highest Risk Areas
 
 ### 1. TTM BO Allocation And Placement
@@ -263,20 +272,36 @@ Required checks:
 
 ## Initial Risk Ranking
 
-Highest priority before hardware attach:
+Highest operational risk after compile/bootstrap:
+
+1. `devm_*` / `drmm_*` cleanup ordering on attach failure and unload
+2. IRQ and threaded-IRQ semantics, especially fence signaling from interrupt
+   context
+3. workqueue flush/cancel and self-rescheduling behavior
+4. `ww_mutex` / WITNESS / `drm_exec`
+5. TTM placement, eviction, mmap fault, and memory-pressure behavior
+6. busdma / IOMMU / cache-attribute correctness for CT, GGTT, and VRAM
+   mappings
+7. runtime PM stubs lying about device state
+8. wait-event wake and restart semantics
+9. firmware loading path and lifetime semantics
+10. `drm_gpuvm` concurrent range tracking under VM_BIND
+11. `sync_file` / fd lifetime
+12. MSI/MSI-X vector setup and teardown
+
+Still-critical first-runtime-proof dependencies:
 
 1. TTM BO allocation and placement
 2. GGTT pinning and aperture mapping
 3. GuC CT buffer allocation and coherency
 4. PCI BAR / MMIO / cache attributes
-5. `ww_mutex` / WITNESS / `drm_exec`
-6. `dma_fence`, `dma_fence_chain`, and `dma_fence_array`
-7. `drm_sched`
-8. TTM eviction and memory pressure
-9. workqueue flush/cancel and unload behavior
-10. `devm_*` / `drmm_*` cleanup ordering
-11. wait queues and signal behavior
-12. runtime PM stubbing
+
+Additional missing-risk reminders:
+
+- FLR/reset/reprobe on external A380 hardware
+- render-node lifetime and devfs teardown on unload
+- resize-BAR assumptions and WC/UC mismatches
+- attach-failure memory leaks masked by managed cleanup
 
 ## Testing Implication
 

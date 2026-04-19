@@ -232,20 +232,27 @@ Design rule:
 The first runtime proof is still not submission.
 But one statement needs tightening:
 
-- MMIO is the first firmware transport proof
+- MMIO `GET_HWCONFIG` is the first firmware transport proof
 - GuC CT is the first shared-memory runtime gate
 
 Design rule:
 
 - prove `xe_uc_fw.c`, `xe_uc.c`, `xe_guc.c`, `xe_guc_ads.c`, and
   `xe_guc_ct.c` before treating submission as the primary signal
-- explicitly validate early GuC MMIO communication before CT
+- explicitly validate early GuC MMIO communication through the
+  `GET_HWCONFIG` path before CT
 - require CT buffer allocation, system-memory BO placement, GGTT pinning, and
   H2G/G2H message exchange to reach a diagnosable state
 - treat CT failures as evidence about BO/GGTT/TTM/LinuxKPI, DMA/coherency,
   firmware ABI, or IRQ/G2H dispatch before blaming higher-level submission
 - port `xe_guc_submit.c` in the DRM lane later; do not let its
   `drm_sched`/`dma_fence` lifecycle shape DMO/DMI architecture
+
+The first exact blocking CT round-trip should be an existing Linux 6.12 path,
+not a custom ping.
+Current best candidate:
+
+- `pc_action_query_task_state()` in `xe_guc_pc.c`
 
 ### 4. HECI GSC should be staged, not made day-one success criteria
 
@@ -324,6 +331,10 @@ A change belongs here if it is Xe-specific:
 
 - LinuxKPI additions only when they are clearly reusable
 - keep them small and independently reviewable
+- audit the chosen reachable Xe subset before writing patches:
+  - probe/init graph
+  - unwind graph
+  - unsupported ioctl and feature matrix
 
 ### Phase C: make the import compile and link
 
@@ -365,16 +376,17 @@ The first hardware milestone should be:
 3. DG2/A380 probes and attaches
 4. MMIO BAR mapping and VRAM probing are real
 5. GuC firmware load and validation reach a diagnosable state
-6. early GuC MMIO communication succeeds
+6. early MMIO `GET_HWCONFIG` communication succeeds
 7. `xe_sa` suballocator setup reaches a known ready/fail state
 8. ADS setup reaches a known ready/fail state
-9. CT buffer allocation and GGTT pinning work
-10. CT H2G/G2H exchange succeeds or fails with useful logs
-11. `xe_pcode` mailbox paths behave correctly
-12. GT and IRQ init complete or fail with useful logs
-13. `xe_oa_init()` is stubbed or succeeds so registration can proceed
-14. `drm_dev_register()` succeeds if initialization reaches that stage
-15. render node appears only after the lower milestones are stable
+9. CT buffer allocation, GGTT pinning, and CT enable work
+10. one existing blocking CT round-trip succeeds or fails with useful logs
+11. unload/reload leaves no leaked IRQ, workqueue, or render-node state
+12. `xe_pcode` mailbox paths behave correctly
+13. GT and IRQ init complete or fail with useful logs
+14. `xe_oa_init()` is stubbed or succeeds so registration can proceed
+15. `drm_dev_register()` succeeds if initialization reaches that stage
+16. render node appears only after the lower milestones are stable
 
 ### Phase G: compare against a Linux 6.12 operational oracle
 
@@ -401,6 +413,12 @@ The first hardware milestone should be:
 
 ### Phase I: audit runtime semantics after compile bootstrap
 
+- audit init/unwind semantics first:
+  - `devm_*`
+  - `drmm_*`
+  - IRQ teardown
+  - workqueue drain and self-reschedule cases
+  - partial GT/UC init failure
 - verify `drm_sched` APIs against Linux 6.12
 - verify `dma_fence_chain` and `dma_fence_array`, not only generic
   `dma-fence`

@@ -166,7 +166,7 @@ Likely first-round staged or stubbed areas:
 
 The earlier planning docs need one refinement:
 
-- MMIO is the first firmware transport proof
+- MMIO `GET_HWCONFIG` is the first firmware transport proof
 - GuC CT is the first shared-memory runtime gate before submission
 
 Smallest honest A380 GuC/CT path:
@@ -194,14 +194,18 @@ Additional early-path facts now verified in Linux 6.12:
 - `xe_guc_pc` is part of the GuC/GT power-control path
 - `xe_oa_init()` sits before `drm_dev_register()`, so OA must either succeed
   or be stubbed/staged cleanly for first registration
+- `xe_guc_hwconfig_init()` performs the concrete early MMIO proof through
+  `XE_GUC_ACTION_GET_HWCONFIG`
+- the first good blocking CT round-trip candidate is
+  `pc_action_query_task_state()` in `xe_guc_pc.c`, not a made-up ping
 
 The Phase-0/1/2 order is therefore:
 
 1. compile and link
-2. module load and MMIO proof
+2. module load and MMIO `GET_HWCONFIG` proof
 3. firmware validation
-4. ADS
-5. CT
+4. ADS and CT prerequisites
+5. CT enable and one existing blocking CT request/reply
 6. only then submission
 
 ## Gap Classification
@@ -305,17 +309,19 @@ ownership conflicts on the host display GPU.
 4. VRAM probing reports a sane size and BAR aperture.
 5. Firmware loading for the GuC and related uc path is real enough to
    diagnose failures.
-6. Early GuC MMIO communication succeeds.
+6. Early GuC MMIO `GET_HWCONFIG` communication succeeds.
 7. `xe_sa` suballocator setup succeeds.
 8. ADS setup reaches a known ready/fail state.
-9. CT buffer allocation and GGTT pinning work.
-10. CT H2G/G2H message exchange succeeds or fails at a clearly understood
-    point.
-11. `xe_pcode` mailbox path behaves correctly.
-12. GT init and IRQ setup complete without panic, or fail with a useful trace.
-13. `xe_oa_init()` is stubbed or succeeds so registration can proceed.
-14. `drm_dev_register()` succeeds if initialization reaches that stage.
-15. The render node appears only after the lower milestones are stable.
+9. CT buffer allocation, GGTT pinning, and CT enable work.
+10. One existing blocking CT request/reply succeeds or fails at a clearly
+    understood point.
+11. IRQ dispatch is stable and unload/reload does not leave leaked
+    IRQ/workqueue/render-node state.
+12. `xe_pcode` mailbox path behaves correctly.
+13. GT init and IRQ setup complete without panic, or fail with a useful trace.
+14. `xe_oa_init()` is stubbed or succeeds so registration can proceed.
+15. `drm_dev_register()` succeeds if initialization reaches that stage.
+16. The render node appears only after the lower milestones are stable.
 
 For each milestone, capture a paired Rocky Linux 10.x A/B log when practical.
 The comparison should show whether FreeBSD fails before, at, or after the same
@@ -378,10 +384,13 @@ Detailed ladder:
 
 The 6.12 FreeBSD lane already has much of the generic DRM substrate Xe wants,
 but the immediate blockers are compile/bootstrap issues before hardware bring-up.
-After that, the largest semantic gap remains userptr and HMM.
+After that, the first realistic failure mode is almost-right runtime behavior in
+attach failure, unload, IRQ, workqueue, and cleanup ordering. The largest
+semantic gap remains userptr and HMM.
 That makes the corrected first strategy:
 
 - make the import compile and link first
+- prove MMIO `GET_HWCONFIG` before CT
 - import Xe mostly intact
 - defer userptr honestly
 - stage HECI GSC and other secondary paths
