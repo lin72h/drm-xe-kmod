@@ -114,6 +114,7 @@ The planning repo currently contains:
 - `docs/xe-freebsd-testing-policy.md`
 - `docs/repo-hygiene.md`
 - `docs/claude-feedback-integration.md`
+- `docs/xe-recent-opus-glm-findings.md`
 - `docs/xe-runtime-semantic-risks.md`
 - `docs/opus-glm-xe-port-review-prompt.md`
 - `RL10-xe.md`
@@ -156,6 +157,10 @@ Important Linux files to inspect:
 - `drivers/gpu/drm/xe/xe_gt_pagefault.c`
 - `drivers/gpu/drm/xe/xe_bo.c`
 - `drivers/gpu/drm/xe/xe_ttm_vram_mgr.c`
+- `drivers/gpu/drm/xe/abi/guc_actions_abi.h`
+- `drivers/gpu/drm/xe/abi/guc_communication_ctb_abi.h`
+- `drivers/gpu/drm/xe/abi/guc_messages_abi.h`
+- `drivers/gpu/drm/xe/abi/guc_errors_abi.h`
 - `drivers/gpu/drm/xe/xe_uc_fw.c`
 - `drivers/gpu/drm/xe/xe_guc.c`
 - `drivers/gpu/drm/xe/xe_guc_ct.c`
@@ -260,12 +265,15 @@ My current working theory is:
 4. Keep display out of the first serious bring-up if possible.
 5. Make userptr/HMM unsupported first.
 6. Reject fault-mode VM creation on FreeBSD at first, including on DG2/A380.
-7. Stage HECI GSC / `mei_aux` after base device path if it can fail
+7. Treat GuC CT as the first runtime gate before submission.
+8. Port `xe_guc_submit.c` in the DRM lane, but only after CT can exchange
+   messages and do not let its scheduler/fence lifecycle shape DMO/DMI.
+9. Stage HECI GSC / `mei_aux` after base device path if it can fail
    gracefully.
-8. Use A380/DG2 as first hardware target.
-9. Keep Alder Lake iGPU on i915 as stable host display.
-10. Use Rocky Linux 10.1 as a Linux 6.12 operational A/B reference.
-11. Use B580/Battlemage as a second target after A380, because GSC/CSCFI may
+10. Use A380/DG2 as first hardware target.
+11. Keep Alder Lake iGPU on i915 as stable host display.
+12. Use Rocky Linux 10.1 as a Linux 6.12 operational A/B reference.
+13. Use B580/Battlemage as a second target after A380, because GSC/CSCFI may
     matter more there.
 
 ## Patch Split Theory
@@ -309,13 +317,42 @@ Candidate first honest milestone:
 4. MMIO BAR mapping succeeds
 5. VRAM probing reports a sane size and BAR aperture
 6. GuC firmware is found and loaded far enough to diagnose failures
-7. GuC CT initializes or fails at a clearly understood point
-8. GT init and IRQ setup complete or fail with useful logs
-9. `drm_dev_register()` succeeds if init reaches that stage
-10. render node appears only after the above is stable
+7. ADS setup reaches a known ready/fail state
+8. CT buffer allocation and GGTT pinning work
+9. CT H2G/G2H exchange succeeds or fails at a clearly understood point
+10. GT init and IRQ setup complete or fail with useful logs
+11. `drm_dev_register()` succeeds if init reaches that stage
+12. render node appears only after the above is stable
 
 I need you to tell me if this milestone is too ambitious, too weak, or ordered
 wrong.
+
+## GuC CT Runtime Gate Theory
+
+Recent source-role review says GuC command transport should be the first
+runtime gate, not submission.
+
+The smallest honest CT path is:
+
+1. GuC ABI headers under `drivers/gpu/drm/xe/abi/guc_*_abi.h`
+2. `xe_uc_fw.c` for firmware loading and validation
+3. `xe_uc.c` and `xe_guc.c` for UC / GuC lifecycle
+4. `xe_guc_ads.c` for ADS setup
+5. `xe_guc_ct.c` for H2G/G2H communication
+
+Reason:
+
+- CT buffers are allocated through the Xe BO path
+- CT needs system-memory placement and GGTT pinning
+- CT exercises firmware-visible DMA/coherency before submission
+- G2H handling starts exercising IRQ dispatch
+
+Therefore, a CT failure should be classified as BO/GGTT/TTM/LinuxKPI,
+DMA/cache, firmware ABI, IRQ/G2H, DRM object model, or Xe-local before jumping
+to submission work.
+
+Please challenge whether CT is truly the first runtime gate on FreeBSD and
+whether there is a smaller honest firmware transport test before CT.
 
 ## Specific Xe Dependency Concerns
 
@@ -640,11 +677,13 @@ Answer these questions:
 13. What should the first 10-20 patches look like?
 14. What FreeBSD developer objections should I expect?
 15. What data should Rocky Linux 10.1 A/B testing capture?
-16. Is B580 useful now, or should A380 remain the only initial target?
-17. Is the Elixir/Zig testing policy wise or distracting?
-18. What should be documented before any code is written?
-19. What assumptions above are weak or likely wrong?
-20. What should I do next?
+16. Is GuC CT the right first runtime gate, and what is the smallest honest
+    H2G/G2H test?
+17. Is B580 useful now, or should A380 remain the only initial target?
+18. Is the Elixir/Zig testing policy wise or distracting?
+19. What should be documented before any code is written?
+20. What assumptions above are weak or likely wrong?
+21. What should I do next?
 
 ## Desired Output Format
 
@@ -656,11 +695,12 @@ Please structure your answer as:
 4. Corrected staging plan
 5. Recommended first patch series
 6. First hardware milestone
-7. Userptr/HMM/SVM/fault-mode recommendation
-8. HECI GSC/display recommendation
-9. A/B testing improvements
-10. FreeBSD upstreaming concerns
-11. Concrete next actions before coding
+7. GuC CT first-runtime-gate recommendation
+8. Userptr/HMM/SVM/fault-mode recommendation
+9. HECI GSC/display recommendation
+10. A/B testing improvements
+11. FreeBSD upstreaming concerns
+12. Concrete next actions before coding
 
 Be direct.
 If a part of the plan is wrong, say exactly why.

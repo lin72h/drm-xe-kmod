@@ -54,6 +54,7 @@ See [xe-freebsd-testing-policy.md](xe-freebsd-testing-policy.md).
 External review feedback is integrated in:
 
 - [claude-feedback-integration.md](claude-feedback-integration.md)
+- [xe-recent-opus-glm-findings.md](xe-recent-opus-glm-findings.md)
 - [xe-runtime-semantic-risks.md](xe-runtime-semantic-risks.md)
 
 ## What the History Shows
@@ -203,7 +204,23 @@ Design rule:
 - keep BO-backed explicit VM_BIND as an early target because Linux 6.12 HMM is
   userptr-specific in the baseline source
 
-### 2. HECI GSC should be staged, not made day-one success criteria
+### 2. GuC CT is the first runtime gate
+
+The first runtime proof is not submission.
+It is GuC firmware load plus CT communication.
+
+Design rule:
+
+- prove `xe_uc_fw.c`, `xe_uc.c`, `xe_guc.c`, `xe_guc_ads.c`, and
+  `xe_guc_ct.c` before treating submission as the primary signal
+- require CT buffer allocation, system-memory BO placement, GGTT pinning, and
+  H2G/G2H message exchange to reach a diagnosable state
+- treat CT failures as evidence about BO/GGTT/TTM/LinuxKPI, DMA/coherency,
+  firmware ABI, or IRQ/G2H dispatch before blaming higher-level submission
+- port `xe_guc_submit.c` in the DRM lane later; do not let its
+  `drm_sched`/`dma_fence` lifecycle shape DMO/DMI architecture
+
+### 3. HECI GSC should be staged, not made day-one success criteria
 
 Local truth:
 
@@ -218,7 +235,7 @@ Design rule:
 - accept that A380 media/HuC paths may be incomplete until GSC is real
 - treat B580/Battlemage as a second target because CSCFI/GSC may matter more
 
-### 3. Relay logging and devcoredump completeness are secondary
+### 4. Relay logging and devcoredump completeness are secondary
 
 Local truth:
 
@@ -232,7 +249,7 @@ Design rule:
 - keep full devcoredump parity out of the first milestone
 - make any non-support visible and temporary
 
-### 4. DG2/A380 should be the first hardware target
+### 5. DG2/A380 should be the first hardware target
 
 The cleanest first target is:
 
@@ -306,10 +323,13 @@ The first hardware milestone should be:
 1. `xe` builds and loads
 2. DG2/A380 probes and attaches
 3. MMIO BAR mapping and VRAM probing are real
-4. GuC firmware and GuC CT reach a diagnosable state
-5. GT and IRQ init complete or fail with useful logs
-6. `drm_dev_register()` succeeds if initialization reaches that stage
-7. render node appears only after the lower milestones are stable
+4. GuC firmware load and validation reach a diagnosable state
+5. ADS setup reaches a known ready/fail state
+6. CT buffer allocation and GGTT pinning work
+7. CT H2G/G2H exchange succeeds or fails with useful logs
+8. GT and IRQ init complete or fail with useful logs
+9. `drm_dev_register()` succeeds if initialization reaches that stage
+10. render node appears only after the lower milestones are stable
 
 ### Phase F: compare against a Linux 6.12 operational oracle
 
@@ -346,6 +366,17 @@ The first hardware milestone should be:
 - treat runtime PM as always-on initially
 - maintain [xe-runtime-semantic-risks.md](xe-runtime-semantic-risks.md)
 
+### Phase I: report evidence back without importing architecture
+
+- classify each failure as LinuxKPI, FreeBSD VM/pager, busdma/IOMMU, firmware
+  contract, DRM object-model assumption, or Xe-only bug
+- report BO/GGTT/TTM, VM_BIND, fence, IRQ, waitqueue, and memory-pressure
+  findings back to Phase 1.5/2 planning
+- do not report DMO object shape, Mach port identity, or `memory_object`
+  design as if the Xe port owns those decisions
+- keep the detailed contract in
+  [xe-recent-opus-glm-findings.md](xe-recent-opus-glm-findings.md)
+
 ## What Not To Do
 
 - do not turn Xe into a DMO or DMI experiment
@@ -377,6 +408,8 @@ Each future Xe patch should answer:
    Rocky/RHEL 10.x Xe milestone?
 6. Which existing tests still pass, and which new Elixir or Zig tests were run?
 7. Which runtime semantic risk does this patch reduce or expose?
+8. Which failure class does this patch clarify: LinuxKPI, FreeBSD VM/pager,
+   DMA/IOMMU, firmware, DRM object model, or Xe-only?
 
 ## Final Rule
 

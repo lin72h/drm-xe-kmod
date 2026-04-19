@@ -171,19 +171,46 @@ For early A380 and B580 testing, prefer this order:
 2. module loads
 3. PCI match occurs
 4. attach starts
-5. firmware paths resolve
-6. GuC and HuC milestones are logged
-7. MMIO and GT init complete
-8. IRQ mode is established
-9. DRM device registration succeeds
-10. render node appears
-11. simple query ioctl succeeds
-12. BO and VM operations work
-13. basic submission works
-14. performance and stress tests begin
+5. MMIO BAR access works
+6. firmware paths resolve
+7. GuC firmware load and ADS setup reach known ready/fail states
+8. GuC CT buffer allocation and GGTT pinning work
+9. CT H2G/G2H exchange succeeds or fails with useful classification
+10. IRQ mode is established without WITNESS violations
+11. DRM device registration succeeds
+12. render node appears
+13. simple query ioctl succeeds
+14. BO allocation/free works for system and local memory
+15. BO-backed VM_BIND works with fault mode disabled
+16. basic submission works and fence signals
+17. memory-pressure and eviction smoke tests begin
 
 Do not run performance tests as the primary signal before the lower milestones
 are stable.
+
+## Linux Xe Tests To Mirror
+
+Mirror Linux Xe test intent, not necessarily KUnit mechanics.
+
+Recommended project-level mirrors:
+
+- `tests/xe_bo.c`: reimplement BO placement and move checks in Zig
+- `tests/xe_migrate.c`: reimplement migration data-integrity checks in Zig
+- `tests/xe_pci.c` / `tests/xe_pci_test.c`: port directly if KUnit is
+  available; otherwise expose as Elixir probe tests
+- `tests/xe_guc_db_mgr_test.c`: reimplement doorbell allocator behavior in Zig
+- `tests/xe_guc_id_mgr_test.c`: reimplement GuC ID allocator bounds in Zig
+- `tests/xe_wa_test.c`: preserve workaround application checks
+- `tests/xe_rtp_test.c`: preserve register table processing checks
+
+Skip for the first A380 milestone:
+
+- `tests/xe_guc_relay_test.c`
+- `tests/xe_gt_sriov_pf_service_test.c`
+- `tests/xe_lmtt_test.c`
+
+These are relay-specific, SR-IOV-specific, or too KUnit-specific for first
+bring-up.
 
 ## CI and Review Policy
 

@@ -311,10 +311,13 @@ Use Linux 6.12 Xe structure as much as possible, but stage the build/import:
    DG2/A380 also advertises `has_usm = 1`.
 8. Keep BO-backed explicit VM_BIND as an early target because Linux 6.12 HMM is
    userptr-specific in the baseline source.
-9. Bring up DG2/A380 first as a secondary GPU while Alder Lake iGPU remains
+9. Treat GuC CT as the first runtime gate before submission.
+10. Port `xe_guc_submit.c` as direct DRM-lane work later, but do not let its
+   scheduler/fence lifecycle shape DMO/DMI.
+11. Bring up DG2/A380 first as a secondary GPU while Alder Lake iGPU remains
    the stable `i915` display.
-10. Use Rocky Linux 10.1 as a Linux 6.12 operational A/B reference for Xe.
-11. Later use B580 as a Battlemage/Xe reference case, since Rocky 10.1 packages
+12. Use Rocky Linux 10.1 as a Linux 6.12 operational A/B reference for Xe.
+13. Later use B580 as a Battlemage/Xe reference case, since Rocky 10.1 packages
    `xe.ko`, has PCI alias `8086:E20B`, and includes BMG GuC/HuC firmware.
 
 ## Proposed Patch Split
@@ -354,10 +357,12 @@ First honest milestone:
 5. MMIO BAR mapping succeeds
 6. VRAM probing reports a sane size and BAR aperture
 7. GuC firmware is found and loaded far enough to diagnose failures
-8. GuC CT initializes or fails at a clearly understood point
-9. GT init and IRQ setup complete or fail with useful logs
-10. `drm_dev_register()` succeeds if the early init path gets far enough
-11. render node appears only after the above is stable
+8. ADS setup reaches a known ready/fail state
+9. CT buffer allocation and GGTT pinning work
+10. CT H2G/G2H exchange succeeds or fails at a clearly understood point
+11. GT init and IRQ setup complete or fail with useful logs
+12. `drm_dev_register()` succeeds if the early init path gets far enough
+13. render node appears only after the above is stable
 
 Userptr, HMM, display replacement, HECI GSC, SR-IOV, OA, relay logging, and
 full devcoredump parity are not required for the first milestone.
@@ -376,6 +381,11 @@ Runtime semantic risks should be treated as first-class planning inputs:
 - runtime PM stubbing
 - wait queues and signal/restart behavior
 - firmware path mapping and lifetime
+
+GuC CT should be treated as the first runtime gate because it exercises
+firmware loading, Xe BO allocation, system-memory placement, GGTT pinning,
+firmware-visible DMA/coherency, H2G/G2H dispatch, and early IRQ behavior before
+submission.
 
 ## Testing Policy
 
@@ -462,17 +472,19 @@ Please answer as a skeptical reviewer.
 11. What FreeBSD developer objections should this plan anticipate?
 12. Is the Rocky Linux 10.1 A/B strategy sound, and what extra data should be
    captured from Linux before debugging FreeBSD?
-13. Is the Elixir/Zig testing split sensible for project-owned tests while
+13. Is GuC CT the right first runtime gate, and what is the smallest honest
+   H2G/G2H message test?
+14. Is the Elixir/Zig testing split sensible for project-owned tests while
    preserving FreeBSD-native upstream tests?
-14. What assumptions in this plan are weak, overconfident, or likely wrong?
-15. What should be done next before writing any Xe port code?
-16. Xe's explicit VM_BIND path for BO-to-GPU-VA mappings appears not to depend
+15. What assumptions in this plan are weak, overconfident, or likely wrong?
+16. What should be done next before writing any Xe port code?
+17. Xe's explicit VM_BIND path for BO-to-GPU-VA mappings appears not to depend
    on userptr/HMM. It appears to need `drm_gpuvm`, `drm_exec`, TTM, `dma_resv`,
    and `dma_fence`, which are already present in the FreeBSD 6.12 DRM lane.
    Does this mean basic VM_BIND can work in the first milestone with
    userptr/HMM deferred, or is there a hidden dependency such as GPU page
    faults on VM-bound BOs going through userptr-like paths?
-17. A separate review mentioned `CONFIG_DRM_XE_GPUSVM`, `xe_svm.c`,
+18. A separate review mentioned `CONFIG_DRM_XE_GPUSVM`, `xe_svm.c`,
    `drm_gpusvm`, and `drm_pagemap`, but these are not visible in the local
    Linux 6.12 reference tree. Are those post-6.12 dependencies that should be
    ignored until an explicit backport decision, or is the local source
@@ -486,8 +498,9 @@ Please structure your answer as:
 2. Missing dependencies or unknowns
 3. Recommended patch-series structure
 4. First hardware milestone recommendation
-5. Testing/A-B strategy corrections
-6. Specific next actions before coding
+5. GuC CT first-runtime-gate recommendation
+6. Testing/A-B strategy corrections
+7. Specific next actions before coding
 
 Be direct.
 If the plan is wrong, say exactly where and why.

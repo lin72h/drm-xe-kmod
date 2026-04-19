@@ -53,6 +53,10 @@ Detailed strategy:
 
 - [xe-freebsd-linux-ab-testing.md](xe-freebsd-linux-ab-testing.md)
 
+Recent OPUS/GLM source-role findings:
+
+- [xe-recent-opus-glm-findings.md](xe-recent-opus-glm-findings.md)
+
 ## Local Trees
 
 Primary reference trees:
@@ -132,6 +136,29 @@ Likely first-round staged or stubbed areas:
 
 - HECI GSC auxiliary-device integration
 - full devcoredump parity
+
+## First Runtime Gate: GuC CT
+
+The first meaningful runtime gate after PCI/MMIO/firmware is GuC command
+transport, not submission.
+
+Smallest honest A380 GuC/CT path:
+
+1. GuC ABI headers under `drivers/gpu/drm/xe/abi/guc_*_abi.h`
+2. `xe_uc_fw.c`
+3. `xe_uc.c` and `xe_guc.c`
+4. `xe_guc_ads.c`
+5. `xe_guc_ct.c`
+
+`xe_guc_submit.c` is still direct Xe porting work, but it should follow CT
+because CT first proves:
+
+- firmware load and ABI compatibility
+- system-memory BO allocation for CT buffers
+- GGTT pinning and invalidation
+- DMA/cache coherency for firmware-visible memory
+- H2G/G2H message dispatch
+- early IRQ/G2H behavior
 
 ## Gap Classification
 
@@ -230,10 +257,12 @@ ownership conflicts on the host display GPU.
 4. VRAM probing reports a sane size and BAR aperture.
 5. Firmware loading for the GuC and related uc path is real enough to
    diagnose failures.
-6. GuC CT initializes or fails at a clearly understood point.
-7. GT init and IRQ setup complete without panic, or fail with a useful trace.
-8. `drm_dev_register()` succeeds if initialization reaches that stage.
-9. The render node appears only after the lower milestones are stable.
+6. ADS setup reaches a known ready/fail state.
+7. CT buffer allocation and GGTT pinning work.
+8. CT H2G/G2H message exchange succeeds or fails at a clearly understood point.
+9. GT init and IRQ setup complete without panic, or fail with a useful trace.
+10. `drm_dev_register()` succeeds if initialization reaches that stage.
+11. The render node appears only after the lower milestones are stable.
 
 For each milestone, capture a paired Rocky Linux 10.x A/B log when practical.
 The comparison should show whether FreeBSD fails before, at, or after the same
@@ -271,7 +300,12 @@ Put changes here when they are Xe-specific:
 2. Import `include/uapi/drm/xe_drm.h`.
 3. Import the non-display Xe core with Linux 6.12 structure preserved.
 4. Add only the minimum FreeBSD-local cut-downs needed to compile honestly.
-5. Start DG2/A380 probe and firmware bring-up on real hardware.
+5. Start DG2/A380 probe, firmware, ADS, and CT bring-up on real hardware.
+6. Treat CT H2G/G2H exchange as the first runtime gate before submission.
+
+Detailed ladder:
+
+- [xe-recent-opus-glm-findings.md](xe-recent-opus-glm-findings.md)
 
 ## Final Stage-0 Summary
 

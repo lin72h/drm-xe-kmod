@@ -137,6 +137,9 @@ Required checks:
 ### 8. GuC CT Buffer Allocation And Coherency
 
 GuC command transport uses driver-allocated buffers visible to firmware.
+It is the first runtime gate after PCI/MMIO/firmware because it exercises the
+Xe BO path, system-memory placement, GGTT pinning, firmware-visible memory,
+and H2G/G2H dispatch before submission.
 
 Risk:
 
@@ -144,12 +147,17 @@ Risk:
   GuC communication
 - FreeBSD TTM/system-memory allocation may not satisfy the same assumptions
 - GuC CT failures can look like firmware bugs when they are DMA/cache bugs
+- CT may fail because BO allocation, GGTT mapping, or invalidation is missing,
+  which is a DRM/TTM/LinuxKPI problem rather than a DMO problem
 
 Required checks:
 
 - compare GuC CT buffer placement with Linux A/B logs
 - verify DMA mask, busdma tag, alignment, and cache behavior
 - log GuC CT initialization progress in detail
+- verify CT buffer GGTT pinning and invalidation before submission tests
+- send at least one H2G message and classify whether G2H response handling,
+  IRQ dispatch, or firmware status is the blocker
 
 ### 9. `devm_*` And `drmm_*` Cleanup Ordering
 
@@ -220,7 +228,7 @@ Highest priority before hardware attach:
 2. workqueue flush/cancel and unload behavior
 3. `dma_fence`, `dma_fence_chain`, and `dma_fence_array`
 4. `drm_sched`
-5. GuC CT buffer allocation and coherency
+5. GuC CT buffer allocation, GGTT pinning, and coherency
 6. PCI BAR / resize BAR / VRAM mapping
 7. `devm_*` / `drmm_*` cleanup ordering
 8. `iosys-map` BAR access correctness
@@ -235,7 +243,7 @@ It must deliberately exercise:
 - attach failure cleanup
 - load/unload cycles
 - firmware failure paths
-- GuC CT initialization
+- GuC CT buffer allocation, GGTT pinning, and H2G/G2H exchange
 - BAR/VRAM probing
 - DRM registration and render-node creation
 
