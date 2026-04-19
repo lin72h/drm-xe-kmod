@@ -35,14 +35,31 @@ The Xe port must not depend on:
 The port should report hardware and substrate evidence back to later DMO/DMI
 planning. It should not consume that future architecture.
 
-## Highest-Value Finding: CT Is The First Runtime Gate
+## Phase 0 Correction
 
-GuC command transport is the first runtime gate after PCI/MMIO/firmware
-bring-up.
+The recent GLM review adds one important correction:
+
+> The first hard problem is making `xe.ko` compile and link.
+
+Compile/bootstrap blockers are now tracked separately in:
+
+- [xe-compile-bootstrap-findings.md](xe-compile-bootstrap-findings.md)
+
+## Highest-Value Runtime Finding: MMIO First, CT Second
+
+The earlier CT-first wording needs one refinement:
+
+- MMIO is the first firmware transport proof
+- GuC command transport is the first shared-memory runtime gate before
+  submission
 
 Do not start by proving submission.
-First prove that the driver can load firmware, allocate and pin the CT buffer,
-and exchange at least one H2G/G2H message with GuC.
+First prove that the driver can:
+
+1. load firmware
+2. complete early MMIO communication with GuC
+3. allocate and pin the CT buffer
+4. exchange at least one H2G/G2H message with GuC
 
 The smallest honest A380 GuC/CT path is:
 
@@ -56,7 +73,11 @@ The smallest honest A380 GuC/CT path is:
 CT is proven because it depends on `drm_sched`, `dma_fence`, exec queue
 lifetime, GuC IDs, and Linux object ownership.
 
-## Why CT Matters
+## Why MMIO And CT Matter
+
+CT registration itself depends on earlier MMIO communication.
+If early MMIO transport is wrong, CT will fail later for reasons that are easy
+to misclassify.
 
 `xe_guc_ct.c` allocates its CT buffer through the Xe BO path, using system
 memory and GGTT pinning.
@@ -95,8 +116,11 @@ The following paths are direct Linux 6.12 Xe porting work in
 - `xe_vm.c`
 - `xe_pt.c`
 - `xe_ggtt.c`
+- `xe_sa.c`
 - `xe_irq.c`
 - `xe_device.c`
+- `xe_pcode.c`
+- `xe_guc_pc.c`
 
 Do not treat these files as native DMO/DMI architecture.
 For this port, they remain Linux-shaped DRM driver code.
@@ -120,6 +144,18 @@ Porting requirement:
 - validate FreeBSD LinuxKPI IRQ bridging under WITNESS
 - verify fence signaling from interrupt or completion context
 - check that G2H/CT dispatch does not violate lock order
+
+Additional verified init-path notes:
+
+- `xe_oa_init(xe)` sits before `drm_dev_register()` in `xe_device.c`
+- if OA is not ready for first bring-up, it needs a stub or staged exclusion
+  that still lets registration proceed
+- `xe_pcode_probe_early(xe)` is in the early device path and must be treated as
+  more than an afterthought
+- `xe_guc_pc` is part of the GuC/GT power-control path and brings workqueue and
+  wait-path risk into early bring-up
+- `xe_sa` suballocation sits under CT and ADS, so CT/ADS work also depends on
+  the suballocator being alive
 
 ## HMM / USM Remains Out Of First Bring-Up
 
@@ -166,20 +202,25 @@ Use this as the first detailed ladder:
 
 1. imports build in `drm-kmod-6.12`
 2. LinuxKPI gaps are classified, not patched blindly
-3. A380 PCI probe fires through `xe_pci.c`
-4. MMIO BAR access works through `xe_mmio.c`
-5. firmware load and validation works through `xe_uc_fw.c`
-6. UC / GuC lifecycle reaches a known ready/fail state
-7. ADS setup succeeds
-8. CT buffer allocation and GGTT pinning work
-9. CT H2G/G2H ping-pong succeeds
-10. IRQ dispatch works without WITNESS violations
-11. BO allocation/free works for system and local memory
-12. GGTT insertion works for CT and simple objects
-13. explicit BO-backed VM_BIND succeeds without HMM/userptr
-14. simple exec queue create/destroy succeeds
-15. basic job submission completes and fence signals
-16. memory pressure / eviction smoke tests run without corrupting BOs
+3. `xe.ko` links without unresolved symbols
+4. A380 PCI probe fires through `xe_pci.c`
+5. MMIO BAR access works through `xe_mmio.c`
+6. firmware load and validation works through `xe_uc_fw.c`
+7. early MMIO communication with GuC succeeds
+8. UC / GuC lifecycle reaches a known ready/fail state
+9. `xe_sa` suballocator setup succeeds
+10. ADS setup succeeds
+11. CT buffer allocation and GGTT pinning work
+12. CT H2G/G2H ping-pong succeeds
+13. IRQ dispatch works without WITNESS violations
+14. `xe_pcode` mailbox path behaves correctly
+15. `xe_oa_init()` is stubbed or succeeds so registration can proceed
+16. BO allocation/free works for system and local memory
+17. GGTT insertion works for CT and simple objects
+18. explicit BO-backed VM_BIND succeeds without HMM/userptr
+19. simple exec queue create/destroy succeeds
+20. basic job submission completes and fence signals
+21. memory pressure / eviction smoke tests run without corrupting BOs
 
 Every failure should be classified as one of:
 
@@ -194,16 +235,18 @@ Every failure should be classified as one of:
 
 These tests are designed to disprove weak assumptions quickly:
 
-1. Load `xe.ko`, probe A380, load GuC firmware, and reach CT-ready without DMO.
-   If this requires DMO, the project boundary is wrong.
-2. Allocate the CT BO, GGTT-pin it, and send one CT message. If this fails,
+1. `xe.ko` links without unresolved symbols. If it does not, the import and
+   support surface are still incomplete.
+2. Load `xe.ko`, probe A380, load GuC firmware, and reach CT-ready without
+   DMO. If this requires DMO, the project boundary is wrong.
+3. Allocate the CT BO, GGTT-pin it, and send one CT message. If this fails,
    focus on BO/GGTT/TTM/LinuxKPI before submission.
-3. Create a BO-backed VM_BIND path with fault mode disabled. If this requires
+4. Create a BO-backed VM_BIND path with fault mode disabled. If this requires
    HMM or MMU notifiers, the explicit-bind assumption is wrong.
-4. Signal a `dma_fence` from the GPU completion or IRQ path under WITNESS. If
+5. Signal a `dma_fence` from the GPU completion or IRQ path under WITNESS. If
    this deadlocks or violates lock order, the LinuxKPI fence/IRQ bridge needs
    work.
-5. Run BO allocation plus eviction under memory pressure. If BOs corrupt or
+6. Run BO allocation plus eviction under memory pressure. If BOs corrupt or
    become inaccessible, the TTM/FreeBSD VM integration is not ready.
 
 ## Tests To Mirror

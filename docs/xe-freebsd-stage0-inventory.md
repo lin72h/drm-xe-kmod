@@ -57,6 +57,10 @@ Recent OPUS/GLM source-role findings:
 
 - [xe-recent-opus-glm-findings.md](xe-recent-opus-glm-findings.md)
 
+Recent compile-bootstrap findings:
+
+- [xe-compile-bootstrap-findings.md](xe-compile-bootstrap-findings.md)
+
 ## Local Trees
 
 Primary reference trees:
@@ -110,6 +114,27 @@ LinuxKPI already provides several useful pieces:
 - `iosys-map`
 - PCI support and related helpers
 
+## Phase 0 Reality: Compile Bootstrap Comes First
+
+The current planning state needs one correction:
+
+> The first hard problem is making `xe.ko` compile and link.
+
+There are already confirmed Phase-0 blockers in the local trees:
+
+- `xe_hmm.c` is forced by `CONFIG_HMM_MIRROR`, but FreeBSD's dummy
+  `linux/hmm.h` is zero bytes
+- `drmm_mutex_init` and `__drmm_mutex_release` are missing from
+  `drm-kmod-6.12`
+- `devm_release_action` is missing from LinuxKPI devres
+- `devm_ioremap_wc` is missing from LinuxKPI
+- `linux/auxiliary_bus.h` does not exist
+- `kconfig.mk` does not yet express the full Xe Kconfig surface
+
+This is now tracked in:
+
+- [xe-compile-bootstrap-findings.md](xe-compile-bootstrap-findings.md)
+
 ## Honest Minimum Import Shape
 
 The right unit of import is not a tiny custom probe subset.
@@ -139,8 +164,10 @@ Likely first-round staged or stubbed areas:
 
 ## First Runtime Gate: GuC CT
 
-The first meaningful runtime gate after PCI/MMIO/firmware is GuC command
-transport, not submission.
+The earlier planning docs need one refinement:
+
+- MMIO is the first firmware transport proof
+- GuC CT is the first shared-memory runtime gate before submission
 
 Smallest honest A380 GuC/CT path:
 
@@ -159,6 +186,23 @@ because CT first proves:
 - DMA/cache coherency for firmware-visible memory
 - H2G/G2H message dispatch
 - early IRQ/G2H behavior
+
+Additional early-path facts now verified in Linux 6.12:
+
+- `xe_sa` suballocation sits under ADS and CT allocation
+- `xe_pcode_probe_early()` is in the early device path
+- `xe_guc_pc` is part of the GuC/GT power-control path
+- `xe_oa_init()` sits before `drm_dev_register()`, so OA must either succeed
+  or be stubbed/staged cleanly for first registration
+
+The Phase-0/1/2 order is therefore:
+
+1. compile and link
+2. module load and MMIO proof
+3. firmware validation
+4. ADS
+5. CT
+6. only then submission
 
 ## Gap Classification
 
@@ -192,6 +236,9 @@ because CT first proves:
 - `linux/relay.h` is dummy-only
 - there is no evident real `linux/auxiliary_bus.h` implementation in the
   local 6.12 lane
+- `drmm_mutex_init` and `__drmm_mutex_release` are missing
+- `devm_release_action` is missing
+- `devm_ioremap_wc` is missing
 
 ## Major Porting Conclusions
 
@@ -251,18 +298,24 @@ ownership conflicts on the host display GPU.
 
 ## First Honest Hardware Milestone
 
-1. `xe` builds and loads in the 6.12 lane.
+0. `xe.ko` compiles and links without unresolved symbols.
+1. `xe` loads in the 6.12 lane.
 2. The A380 probes and attaches while Alder Lake remains on `i915`.
 3. MMIO BAR mapping succeeds.
 4. VRAM probing reports a sane size and BAR aperture.
 5. Firmware loading for the GuC and related uc path is real enough to
    diagnose failures.
-6. ADS setup reaches a known ready/fail state.
-7. CT buffer allocation and GGTT pinning work.
-8. CT H2G/G2H message exchange succeeds or fails at a clearly understood point.
-9. GT init and IRQ setup complete without panic, or fail with a useful trace.
-10. `drm_dev_register()` succeeds if initialization reaches that stage.
-11. The render node appears only after the lower milestones are stable.
+6. Early GuC MMIO communication succeeds.
+7. `xe_sa` suballocator setup succeeds.
+8. ADS setup reaches a known ready/fail state.
+9. CT buffer allocation and GGTT pinning work.
+10. CT H2G/G2H message exchange succeeds or fails at a clearly understood
+    point.
+11. `xe_pcode` mailbox path behaves correctly.
+12. GT init and IRQ setup complete without panic, or fail with a useful trace.
+13. `xe_oa_init()` is stubbed or succeeds so registration can proceed.
+14. `drm_dev_register()` succeeds if initialization reaches that stage.
+15. The render node appears only after the lower milestones are stable.
 
 For each milestone, capture a paired Rocky Linux 10.x A/B log when practical.
 The comparison should show whether FreeBSD fails before, at, or after the same
@@ -281,27 +334,41 @@ Put changes here when they are generic:
 - real MMU interval notifier support
 - real HMM or userptr-enabling VM support
 - generic auxiliary-bus or `mei_aux` support
+- `devm_release_action`
+- `devm_ioremap_wc`
+- stub `linux/auxiliary_bus.h` if it is introduced as generic LinuxKPI
 - generic firmware, PCI, DMA, VM, or LinuxKPI fixes
 
 ### `drm-kmod-6.12`
 
 Put changes here when they are Xe-specific:
 
+- Xe-related `CONFIG_*` bootstrap in `kconfig.mk`
+- initial `CONFIG_DRM_XE_DISPLAY=n` and `CONFIG_HMM_MIRROR` policy
 - Xe subtree import
 - `xe` Makefile and top-level kmod wiring
 - `xe_drm.h` import
+- `drmm_mutex_init` and `__drmm_mutex_release` in DRM managed-resource code
 - DG2-first attach policy and force-probe behavior
 - temporary Xe-local unsupported paths for userptr, HECI GSC, OA, or
   devcoredump staging
 
 ## Immediate Bring-Up Sequence
 
-1. Add `xe` build plumbing in `drm-kmod-6.12`.
-2. Import `include/uapi/drm/xe_drm.h`.
-3. Import the non-display Xe core with Linux 6.12 structure preserved.
-4. Add only the minimum FreeBSD-local cut-downs needed to compile honestly.
-5. Start DG2/A380 probe, firmware, ADS, and CT bring-up on real hardware.
-6. Treat CT H2G/G2H exchange as the first runtime gate before submission.
+1. Add missing Xe-related `CONFIG_*` symbols to `drm-kmod-6.12/kconfig.mk`.
+2. Set `CONFIG_DRM_XE_DISPLAY=n` for the initial import.
+3. Resolve the `CONFIG_HMM_MIRROR` compile strategy.
+4. Add `drmm_mutex_init` and `__drmm_mutex_release`.
+5. Add `devm_release_action` and `devm_ioremap_wc`.
+6. Add stub `linux/auxiliary_bus.h`.
+7. Add `xe` build plumbing in `drm-kmod-6.12`.
+8. Import `include/uapi/drm/xe_drm.h`.
+9. Import the non-display Xe core with Linux 6.12 structure preserved.
+10. Iterate until `xe.ko` links cleanly.
+11. Only then start DG2/A380 probe, firmware, MMIO, ADS, and CT bring-up on
+    real hardware.
+12. Treat MMIO as the first firmware-transport proof and CT as the first
+    shared-memory runtime gate before submission.
 
 Detailed ladder:
 
@@ -309,10 +376,12 @@ Detailed ladder:
 
 ## Final Stage-0 Summary
 
-The 6.12 FreeBSD lane already has much of the generic DRM substrate Xe wants.
-The largest real missing semantic area is userptr and HMM.
-That makes the clean first strategy:
+The 6.12 FreeBSD lane already has much of the generic DRM substrate Xe wants,
+but the immediate blockers are compile/bootstrap issues before hardware bring-up.
+After that, the largest semantic gap remains userptr and HMM.
+That makes the corrected first strategy:
 
+- make the import compile and link first
 - import Xe mostly intact
 - defer userptr honestly
 - stage HECI GSC and other secondary paths

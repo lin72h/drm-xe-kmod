@@ -54,6 +54,7 @@ See [xe-freebsd-testing-policy.md](xe-freebsd-testing-policy.md).
 External review feedback is integrated in:
 
 - [claude-feedback-integration.md](claude-feedback-integration.md)
+- [xe-compile-bootstrap-findings.md](xe-compile-bootstrap-findings.md)
 - [xe-recent-opus-glm-findings.md](xe-recent-opus-glm-findings.md)
 - [xe-runtime-semantic-risks.md](xe-runtime-semantic-risks.md)
 
@@ -204,15 +205,41 @@ Design rule:
 - keep BO-backed explicit VM_BIND as an early target because Linux 6.12 HMM is
   userptr-specific in the baseline source
 
-### 2. GuC CT is the first runtime gate
+### 2. Compile bootstrap is Phase 0 engineering
 
-The first runtime proof is not submission.
-It is GuC firmware load plus CT communication.
+The plan cannot assume that the first hard problem is runtime.
+The first hard problem is making `xe.ko` compile and link.
+
+Confirmed blockers already include:
+
+- `xe_hmm.c` forced by `CONFIG_HMM_MIRROR`
+- missing `drmm_mutex_init`
+- missing `__drmm_mutex_release`
+- missing `devm_release_action`
+- missing `devm_ioremap_wc`
+- missing `linux/auxiliary_bus.h`
+- incomplete Xe-related `CONFIG_*` symbol bootstrap in `kconfig.mk`
+
+Design rule:
+
+- treat compile bootstrap as its own phase before hardware bring-up
+- record each blocker as generic LinuxKPI, generic DRM, or Xe-local ownership
+- do not start runtime analysis from the assumption that the import already
+  links
+
+### 3. MMIO proof comes before CT, and CT comes before submission
+
+The first runtime proof is still not submission.
+But one statement needs tightening:
+
+- MMIO is the first firmware transport proof
+- GuC CT is the first shared-memory runtime gate
 
 Design rule:
 
 - prove `xe_uc_fw.c`, `xe_uc.c`, `xe_guc.c`, `xe_guc_ads.c`, and
   `xe_guc_ct.c` before treating submission as the primary signal
+- explicitly validate early GuC MMIO communication before CT
 - require CT buffer allocation, system-memory BO placement, GGTT pinning, and
   H2G/G2H message exchange to reach a diagnosable state
 - treat CT failures as evidence about BO/GGTT/TTM/LinuxKPI, DMA/coherency,
@@ -220,7 +247,7 @@ Design rule:
 - port `xe_guc_submit.c` in the DRM lane later; do not let its
   `drm_sched`/`dma_fence` lifecycle shape DMO/DMI architecture
 
-### 3. HECI GSC should be staged, not made day-one success criteria
+### 4. HECI GSC should be staged, not made day-one success criteria
 
 Local truth:
 
@@ -235,7 +262,7 @@ Design rule:
 - accept that A380 media/HuC paths may be incomplete until GSC is real
 - treat B580/Battlemage as a second target because CSCFI/GSC may matter more
 
-### 4. Relay logging and devcoredump completeness are secondary
+### 5. Relay logging and devcoredump completeness are secondary
 
 Local truth:
 
@@ -249,7 +276,7 @@ Design rule:
 - keep full devcoredump parity out of the first milestone
 - make any non-support visible and temporary
 
-### 5. DG2/A380 should be the first hardware target
+### 6. DG2/A380 should be the first hardware target
 
 The cleanest first target is:
 
@@ -298,13 +325,23 @@ A change belongs here if it is Xe-specific:
 - LinuxKPI additions only when they are clearly reusable
 - keep them small and independently reviewable
 
-### Phase C: import Xe mostly intact
+### Phase C: make the import compile and link
+
+- add the missing Xe-related `CONFIG_*` bootstrap in `kconfig.mk`
+- set `CONFIG_DRM_XE_DISPLAY=n` initially
+- choose the `CONFIG_HMM_MIRROR` strategy explicitly
+- add generic blockers such as `devm_release_action`, `devm_ioremap_wc`, and
+  `linux/auxiliary_bus.h`
+- add generic DRM blockers such as `drmm_mutex_init`
+- treat successful `xe.ko` link as the first falsification gate
+
+### Phase D: import Xe mostly intact
 
 - import `include/uapi/drm/xe_drm.h`
 - import the Xe subtree with Linux structure preserved
 - add minimal FreeBSD build plumbing
 
-### Phase D: make first unsupported cuts explicit
+### Phase E: make first unsupported cuts explicit
 
 Likely first deferrals:
 
@@ -313,25 +350,33 @@ Likely first deferrals:
 - relay-backed logging
 - full devcoredump integration
 - display
-- SR-IOV
 - OA if it blocks early bring-up
+- SR-IOV
 
-### Phase E: target the first honest hardware milestone
+If OA is deferred, the FreeBSD cut must still let `xe_oa_init()` return
+success in the init path so `drm_dev_register()` remains reachable.
+
+### Phase F: target the first honest hardware milestone
 
 The first hardware milestone should be:
 
-1. `xe` builds and loads
-2. DG2/A380 probes and attaches
-3. MMIO BAR mapping and VRAM probing are real
-4. GuC firmware load and validation reach a diagnosable state
-5. ADS setup reaches a known ready/fail state
-6. CT buffer allocation and GGTT pinning work
-7. CT H2G/G2H exchange succeeds or fails with useful logs
-8. GT and IRQ init complete or fail with useful logs
-9. `drm_dev_register()` succeeds if initialization reaches that stage
-10. render node appears only after the lower milestones are stable
+1. `xe.ko` builds and links
+2. `xe` loads
+3. DG2/A380 probes and attaches
+4. MMIO BAR mapping and VRAM probing are real
+5. GuC firmware load and validation reach a diagnosable state
+6. early GuC MMIO communication succeeds
+7. `xe_sa` suballocator setup reaches a known ready/fail state
+8. ADS setup reaches a known ready/fail state
+9. CT buffer allocation and GGTT pinning work
+10. CT H2G/G2H exchange succeeds or fails with useful logs
+11. `xe_pcode` mailbox paths behave correctly
+12. GT and IRQ init complete or fail with useful logs
+13. `xe_oa_init()` is stubbed or succeeds so registration can proceed
+14. `drm_dev_register()` succeeds if initialization reaches that stage
+15. render node appears only after the lower milestones are stable
 
-### Phase F: compare against a Linux 6.12 operational oracle
+### Phase G: compare against a Linux 6.12 operational oracle
 
 - use Rocky Linux 10.x native boot for the cleanest same-hardware A/B signal
 - use Rocky Linux 10.x under bhyve with A380 passthrough for faster reference
@@ -343,7 +388,7 @@ The first hardware milestone should be:
 - keep the detailed test strategy in
   [xe-freebsd-linux-ab-testing.md](xe-freebsd-linux-ab-testing.md)
 
-### Phase G: make testing reproducible
+### Phase H: make testing reproducible
 
 - keep existing FreeBSD, drm-kmod, Linux, Mesa, or userspace tests in their
   native frameworks and make them pass
@@ -354,7 +399,7 @@ The first hardware milestone should be:
 - keep the detailed policy in
   [xe-freebsd-testing-policy.md](xe-freebsd-testing-policy.md)
 
-### Phase H: audit runtime semantics before code
+### Phase I: audit runtime semantics after compile bootstrap
 
 - verify `drm_sched` APIs against Linux 6.12
 - verify `dma_fence_chain` and `dma_fence_array`, not only generic
@@ -366,7 +411,7 @@ The first hardware milestone should be:
 - treat runtime PM as always-on initially
 - maintain [xe-runtime-semantic-risks.md](xe-runtime-semantic-risks.md)
 
-### Phase I: report evidence back without importing architecture
+### Phase J: report evidence back without importing architecture
 
 - classify each failure as LinuxKPI, FreeBSD VM/pager, busdma/IOMMU, firmware
   contract, DRM object-model assumption, or Xe-only bug

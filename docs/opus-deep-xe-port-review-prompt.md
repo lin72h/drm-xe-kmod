@@ -114,6 +114,7 @@ The planning repo currently contains:
 - `docs/xe-freebsd-testing-policy.md`
 - `docs/repo-hygiene.md`
 - `docs/claude-feedback-integration.md`
+- `docs/xe-compile-bootstrap-findings.md`
 - `docs/xe-recent-opus-glm-findings.md`
 - `docs/xe-runtime-semantic-risks.md`
 - `docs/opus-glm-xe-port-review-prompt.md`
@@ -182,6 +183,7 @@ Local findings:
 - common DRM helpers already present include:
   `drm_exec`, `drm_gpuvm`, `drm_buddy`, TTM resource support, dma-resv,
   dma-fence, `dma_fence_chain`, `dma_fence_array`, `drm_sched`, and sync_file
+- `drmm_mutex_init` and `__drmm_mutex_release` are missing locally
 
 Important FreeBSD DRM files to inspect:
 
@@ -213,9 +215,11 @@ Local findings:
 - `linux/devcoredump.h` is minimal/stub-like
 - no mature real `linux/auxiliary_bus.h` implementation is obvious in the
   local 6.12 lane
+- `devm_release_action` is missing
+- `devm_ioremap_wc` is missing
 
-This suggests the biggest semantic gap is not "can it compile?" but "which
-runtime semantics are fake or absent?"
+This suggests the first hard problem may be compile/bootstrap, not just
+runtime semantics.
 
 ## FreeBSD Porting Precedent
 
@@ -265,15 +269,17 @@ My current working theory is:
 4. Keep display out of the first serious bring-up if possible.
 5. Make userptr/HMM unsupported first.
 6. Reject fault-mode VM creation on FreeBSD at first, including on DG2/A380.
-7. Treat GuC CT as the first runtime gate before submission.
-8. Port `xe_guc_submit.c` in the DRM lane, but only after CT can exchange
+7. Treat compile/bootstrap as Phase 0 engineering, not routine glue.
+8. Validate MMIO transport before CT.
+9. Treat GuC CT as the first shared-memory runtime gate before submission.
+10. Port `xe_guc_submit.c` in the DRM lane, but only after CT can exchange
    messages and do not let its scheduler/fence lifecycle shape DMO/DMI.
-9. Stage HECI GSC / `mei_aux` after base device path if it can fail
+11. Stage HECI GSC / `mei_aux` after base device path if it can fail
    gracefully.
-10. Use A380/DG2 as first hardware target.
-11. Keep Alder Lake iGPU on i915 as stable host display.
-12. Use Rocky Linux 10.1 as a Linux 6.12 operational A/B reference.
-13. Use B580/Battlemage as a second target after A380, because GSC/CSCFI may
+12. Use A380/DG2 as first hardware target.
+13. Keep Alder Lake iGPU on i915 as stable host display.
+14. Use Rocky Linux 10.1 as a Linux 6.12 operational A/B reference.
+15. Use B580/Battlemage as a second target after A380, because GSC/CSCFI may
     matter more there.
 
 ## Patch Split Theory
@@ -309,14 +315,15 @@ Decision rule:
 The first milestone should not be performance.
 It should not be "replace the system display stack."
 
-Candidate first honest milestone:
+Candidate corrected first honest milestone:
 
-1. `xe` builds as a FreeBSD kmod
-2. module load works
-3. A380 PCI match/probe occurs
-4. MMIO BAR mapping succeeds
-5. VRAM probing reports a sane size and BAR aperture
-6. GuC firmware is found and loaded far enough to diagnose failures
+0. `xe.ko` compiles and links without unresolved symbols
+1. module load works
+2. A380 PCI match/probe occurs
+3. MMIO BAR mapping succeeds
+4. VRAM probing reports a sane size and BAR aperture
+5. GuC firmware is found and loaded far enough to diagnose failures
+6. early GuC MMIO communication succeeds
 7. ADS setup reaches a known ready/fail state
 8. CT buffer allocation and GGTT pinning work
 9. CT H2G/G2H exchange succeeds or fails at a clearly understood point
@@ -329,8 +336,9 @@ wrong.
 
 ## GuC CT Runtime Gate Theory
 
-Recent source-role review says GuC command transport should be the first
-runtime gate, not submission.
+Recent source-role review says MMIO is the first firmware transport proof and
+GuC command transport is the first shared-memory runtime gate before
+submission.
 
 The smallest honest CT path is:
 
@@ -346,13 +354,14 @@ Reason:
 - CT needs system-memory placement and GGTT pinning
 - CT exercises firmware-visible DMA/coherency before submission
 - G2H handling starts exercising IRQ dispatch
+- but CT registration itself still depends on earlier MMIO communication
 
 Therefore, a CT failure should be classified as BO/GGTT/TTM/LinuxKPI,
 DMA/cache, firmware ABI, IRQ/G2H, DRM object model, or Xe-local before jumping
 to submission work.
 
-Please challenge whether CT is truly the first runtime gate on FreeBSD and
-whether there is a smaller honest firmware transport test before CT.
+Please challenge whether this MMIO-then-CT ordering is correct on FreeBSD and
+which exact MMIO and CT tests should be used first.
 
 ## Specific Xe Dependency Concerns
 
@@ -663,27 +672,29 @@ Find them.
 Answer these questions:
 
 1. What is the biggest architectural mistake in this plan, if any?
-2. Is Linux 6.12 the right semantic baseline for FreeBSD upstream work?
-3. Is the split between `freebsd-src-drm-6.12` and `drm-kmod-6.12` correct?
-4. What dependencies am I underestimating?
-5. What missing LinuxKPI semantics will hurt most at runtime?
-6. Is userptr/HMM deferral viable for the first milestone?
-7. Is explicit BO-backed VM_BIND viable without userptr/HMM?
-8. How should GPU fault-mode / USM be handled initially?
-9. Can HECI GSC / `mei_aux` be staged, or is it an early blocker?
-10. Can display be compiled out or disabled for first bring-up?
-11. What is the smallest honest Xe import subset?
-12. What should the first hardware milestone be?
-13. What should the first 10-20 patches look like?
-14. What FreeBSD developer objections should I expect?
-15. What data should Rocky Linux 10.1 A/B testing capture?
-16. Is GuC CT the right first runtime gate, and what is the smallest honest
+2. What compile/bootstrap blockers am I still underestimating before any
+   hardware work?
+3. Is Linux 6.12 the right semantic baseline for FreeBSD upstream work?
+4. Is the split between `freebsd-src-drm-6.12` and `drm-kmod-6.12` correct?
+5. What dependencies am I underestimating?
+6. What missing LinuxKPI semantics will hurt most at runtime?
+7. Is userptr/HMM deferral viable for the first milestone?
+8. Is explicit BO-backed VM_BIND viable without userptr/HMM?
+9. How should GPU fault-mode / USM be handled initially?
+10. Can HECI GSC / `mei_aux` be staged, or is it an early blocker?
+11. Can display be compiled out or disabled for first bring-up?
+12. What is the smallest honest Xe import subset?
+13. What should the first hardware milestone be?
+14. What should the first 10-20 patches look like?
+15. What FreeBSD developer objections should I expect?
+16. What data should Rocky Linux 10.1 A/B testing capture?
+17. Is GuC CT the right first runtime gate, and what is the smallest honest
     H2G/G2H test?
-17. Is B580 useful now, or should A380 remain the only initial target?
-18. Is the Elixir/Zig testing policy wise or distracting?
-19. What should be documented before any code is written?
-20. What assumptions above are weak or likely wrong?
-21. What should I do next?
+18. Is B580 useful now, or should A380 remain the only initial target?
+19. Is the Elixir/Zig testing policy wise or distracting?
+20. What should be documented before any code is written?
+21. What assumptions above are weak or likely wrong?
+22. What should I do next?
 
 ## Desired Output Format
 

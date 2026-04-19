@@ -104,6 +104,7 @@ Linux 6.12:
 - generic DRM support already present includes:
   `drm_exec`, `drm_gpuvm`, `drm_buddy`, TTM resource management, dma-resv,
   dma-fence, `dma_fence_chain`, `dma_fence_array`, `drm_sched`, and sync_file
+- `drmm_mutex_init` and `__drmm_mutex_release` are missing locally
 
 `freebsd-src-drm-6.12` / LinuxKPI:
 
@@ -120,6 +121,8 @@ Linux 6.12:
 - `linux/relay.h` is dummy-only
 - `linux/devcoredump.h` is minimal/stub-like
 - real auxiliary-bus / MEI auxiliary integration is not clearly present
+- `devm_release_action` is missing
+- `devm_ioremap_wc` is missing
 
 ## Specific Xe Kernel Dependencies
 
@@ -311,13 +314,15 @@ Use Linux 6.12 Xe structure as much as possible, but stage the build/import:
    DG2/A380 also advertises `has_usm = 1`.
 8. Keep BO-backed explicit VM_BIND as an early target because Linux 6.12 HMM is
    userptr-specific in the baseline source.
-9. Treat GuC CT as the first runtime gate before submission.
-10. Port `xe_guc_submit.c` as direct DRM-lane work later, but do not let its
+9. Treat compile/bootstrap as Phase 0 engineering rather than routine glue.
+10. Validate MMIO transport before CT.
+11. Treat GuC CT as the first shared-memory runtime gate before submission.
+12. Port `xe_guc_submit.c` as direct DRM-lane work later, but do not let its
    scheduler/fence lifecycle shape DMO/DMI.
-11. Bring up DG2/A380 first as a secondary GPU while Alder Lake iGPU remains
+13. Bring up DG2/A380 first as a secondary GPU while Alder Lake iGPU remains
    the stable `i915` display.
-12. Use Rocky Linux 10.1 as a Linux 6.12 operational A/B reference for Xe.
-13. Later use B580 as a Battlemage/Xe reference case, since Rocky 10.1 packages
+14. Use Rocky Linux 10.1 as a Linux 6.12 operational A/B reference for Xe.
+15. Later use B580 as a Battlemage/Xe reference case, since Rocky 10.1 packages
    `xe.ko`, has PCI alias `8086:E20B`, and includes BMG GuC/HuC firmware.
 
 ## Proposed Patch Split
@@ -350,13 +355,14 @@ Decision rule:
 
 First honest milestone:
 
-1. `xe` builds and links as a FreeBSD kmod
-2. module load is real
-3. A380 PCI match/probe occurs
-4. attach starts without panic
-5. MMIO BAR mapping succeeds
-6. VRAM probing reports a sane size and BAR aperture
-7. GuC firmware is found and loaded far enough to diagnose failures
+0. `xe.ko` builds and links as a FreeBSD kmod without unresolved symbols
+1. module load is real
+2. A380 PCI match/probe occurs
+3. attach starts without panic
+4. MMIO BAR mapping succeeds
+5. VRAM probing reports a sane size and BAR aperture
+6. GuC firmware is found and loaded far enough to diagnose failures
+7. early GuC MMIO communication succeeds
 8. ADS setup reaches a known ready/fail state
 9. CT buffer allocation and GGTT pinning work
 10. CT H2G/G2H exchange succeeds or fails at a clearly understood point
@@ -382,7 +388,7 @@ Runtime semantic risks should be treated as first-class planning inputs:
 - wait queues and signal/restart behavior
 - firmware path mapping and lifetime
 
-GuC CT should be treated as the first runtime gate because it exercises
+GuC CT should be treated as the first shared-memory runtime gate because it exercises
 firmware loading, Xe BO allocation, system-memory placement, GGTT pinning,
 firmware-visible DMA/coherency, H2G/G2H dispatch, and early IRQ behavior before
 submission.
@@ -439,28 +445,30 @@ Please answer as a skeptical reviewer.
 
 1. Is this patch split between `freebsd-src-drm-6.12` and `drm-kmod-6.12`
    correct for FreeBSD upstream review?
-2. What important LinuxKPI or DRM dependencies are missing from the findings?
-3. Is deferring userptr/HMM the right first-stage decision, or will Xe depend
+2. What important compile/bootstrap blockers are still missing from the
+   findings?
+3. What important LinuxKPI or DRM dependencies are missing from the findings?
+4. Is deferring userptr/HMM the right first-stage decision, or will Xe depend
    on those paths earlier than expected? Specifically, Linux 6.12 userptr uses
    `mmu_interval_notifier` and `hmm_range_fault`, and the page-fault handler
    can repin userptr VMAs. Can GPU page faults occur in the first milestone
    without userptr enabled, should fault-mode VM creation be rejected at ioctl
    time, and what should happen if faults still arrive?
-4. Is HECI GSC safe to stage after base attach/GT bring-up, or is there a
+5. Is HECI GSC safe to stage after base attach/GT bring-up, or is there a
    hidden dependency that makes it an earlier blocker? Specifically, GSC
    creates an `auxiliary_device` through `mei_aux` infrastructure. If
    auxiliary-bus support is missing or incomplete in LinuxKPI, can
    `xe_heci_gsc_init` fail gracefully without blocking the rest of probe?
-5. Is a non-display Xe core import realistic for A380/B580 early bring-up, or
+6. Is a non-display Xe core import realistic for A380/B580 early bring-up, or
    will display code be entangled enough that it must come earlier?
    Specifically, can display probing and init be compiled out or stubbed to
    return success, and can non-display Xe still reach `drm_dev_register()`?
-6. What would be the smallest honest Xe source subset to import first without
+7. What would be the smallest honest Xe source subset to import first without
    creating a misleading toy driver?
-7. What should the first FreeBSD hardware milestone be: build/load, PCI attach,
+8. What should the first FreeBSD hardware milestone be: build/load, PCI attach,
    firmware init, DRM node, render node, or basic submission?
-8. Which pieces should be explicit `-ENODEV` / `-EOPNOTSUPP` at first?
-9. Which FreeBSD APIs or LinuxKPI shims are most likely to cause subtle runtime
+9. Which pieces should be explicit `-ENODEV` / `-EOPNOTSUPP` at first?
+10. Which FreeBSD APIs or LinuxKPI shims are most likely to cause subtle runtime
    bugs rather than compile failures? Concrete candidates include dma-resv
    locking semantics, ww_mutex deadlock detection, drm_exec locking under
    FreeBSD witness, TTM placement and eviction under memory pressure,
@@ -468,23 +476,23 @@ Please answer as a skeptical reviewer.
    sync_file fd lifecycle, drm_gpuvm range tracking under concurrent VM_BIND,
    GuC CT buffer coherency, workqueue cancellation, devm/drmm cleanup ordering,
    and runtime PM stubbing.
-10. What should the first 10 patches in an upstreamable series look like?
-11. What FreeBSD developer objections should this plan anticipate?
-12. Is the Rocky Linux 10.1 A/B strategy sound, and what extra data should be
+11. What should the first 10 patches in an upstreamable series look like?
+12. What FreeBSD developer objections should this plan anticipate?
+13. Is the Rocky Linux 10.1 A/B strategy sound, and what extra data should be
    captured from Linux before debugging FreeBSD?
-13. Is GuC CT the right first runtime gate, and what is the smallest honest
+14. Is GuC CT the right first runtime gate, and what is the smallest honest
    H2G/G2H message test?
-14. Is the Elixir/Zig testing split sensible for project-owned tests while
+15. Is the Elixir/Zig testing split sensible for project-owned tests while
    preserving FreeBSD-native upstream tests?
-15. What assumptions in this plan are weak, overconfident, or likely wrong?
-16. What should be done next before writing any Xe port code?
-17. Xe's explicit VM_BIND path for BO-to-GPU-VA mappings appears not to depend
+16. What assumptions in this plan are weak, overconfident, or likely wrong?
+17. What should be done next before writing any Xe port code?
+18. Xe's explicit VM_BIND path for BO-to-GPU-VA mappings appears not to depend
    on userptr/HMM. It appears to need `drm_gpuvm`, `drm_exec`, TTM, `dma_resv`,
    and `dma_fence`, which are already present in the FreeBSD 6.12 DRM lane.
    Does this mean basic VM_BIND can work in the first milestone with
    userptr/HMM deferred, or is there a hidden dependency such as GPU page
    faults on VM-bound BOs going through userptr-like paths?
-18. A separate review mentioned `CONFIG_DRM_XE_GPUSVM`, `xe_svm.c`,
+19. A separate review mentioned `CONFIG_DRM_XE_GPUSVM`, `xe_svm.c`,
    `drm_gpusvm`, and `drm_pagemap`, but these are not visible in the local
    Linux 6.12 reference tree. Are those post-6.12 dependencies that should be
    ignored until an explicit backport decision, or is the local source

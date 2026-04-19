@@ -47,6 +47,19 @@ needed semantic, mark that honestly as an unsupported or deferred area.
 The deferral should identify the missing FreeBSD, LinuxKPI, DRM, firmware, or
 hardware prerequisite.
 
+## Compile Bootstrap Gate
+
+For Xe specifically, the first test is not hardware.
+It is:
+
+- does `xe.ko` compile and link without unresolved symbols
+
+This must become a standing regression gate because the Xe import surface is
+large and a single added source file can pull in a new missing symbol or
+header.
+
+Treat compile/bootstrap failures as first-class regressions.
+
 ## New Tests
 
 For new project-owned tests, choose the language by sensitivity to performance,
@@ -167,23 +180,24 @@ inside that harness.
 
 For early A380 and B580 testing, prefer this order:
 
-1. build succeeds
+1. `xe.ko` compiles and links without unresolved symbols
 2. module loads
 3. PCI match occurs
 4. attach starts
 5. MMIO BAR access works
 6. firmware paths resolve
-7. GuC firmware load and ADS setup reach known ready/fail states
-8. GuC CT buffer allocation and GGTT pinning work
-9. CT H2G/G2H exchange succeeds or fails with useful classification
-10. IRQ mode is established without WITNESS violations
-11. DRM device registration succeeds
-12. render node appears
-13. simple query ioctl succeeds
-14. BO allocation/free works for system and local memory
-15. BO-backed VM_BIND works with fault mode disabled
-16. basic submission works and fence signals
-17. memory-pressure and eviction smoke tests begin
+7. early GuC MMIO communication succeeds
+8. GuC firmware load and ADS setup reach known ready/fail states
+9. GuC CT buffer allocation and GGTT pinning work
+10. CT H2G/G2H exchange succeeds or fails with useful classification
+11. IRQ mode is established without WITNESS violations
+12. DRM device registration succeeds
+13. render node appears
+14. simple query ioctl succeeds
+15. BO allocation/free works for system and local memory
+16. BO-backed VM_BIND works with fault mode disabled
+17. basic submission works and fence signals
+18. memory-pressure and eviction smoke tests begin
 
 Do not run performance tests as the primary signal before the lower milestones
 are stable.
@@ -194,8 +208,9 @@ Mirror Linux Xe test intent, not necessarily KUnit mechanics.
 
 Recommended project-level mirrors:
 
-- `tests/xe_bo.c`: reimplement BO placement and move checks in Zig
-- `tests/xe_migrate.c`: reimplement migration data-integrity checks in Zig
+- `tests/xe_bo.c`: highest-priority Zig mirror for BO placement and move checks
+- `tests/xe_migrate.c`: highest-priority Zig mirror for migration
+  data-integrity checks
 - `tests/xe_pci.c` / `tests/xe_pci_test.c`: port directly if KUnit is
   available; otherwise expose as Elixir probe tests
 - `tests/xe_guc_db_mgr_test.c`: reimplement doorbell allocator behavior in Zig
