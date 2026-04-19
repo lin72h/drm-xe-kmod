@@ -302,6 +302,35 @@ Design rule:
 
 - separate secondary-GPU Xe bring-up from any host-display takeover question
 
+### 7. Phase 1.5 should widen the hardware topology, not the feature contract
+
+After the first A380 milestone is stable, the roadmap should add Phase 1.5:
+
+- move to a lab platform that actually provides two Xe-managed devices
+- keep the Arc A380 as the external Xe device
+- validate a dual-Xe host topology under FreeBSD
+
+Design rule:
+
+- treat Phase 1.5 as a hardware-expansion and coexistence milestone
+- do not let it quietly become first display enablement, first userptr, or
+  first large semantic jump
+- keep the same Linux 6.12 semantic baseline and upstream-first patch shape
+- require a concrete "stable" gate before Phase 1.5:
+  - A380 probe, firmware load, CT, and `drm_dev_register()` working
+  - BO allocation and GGTT pinning working
+  - at least one BO-backed VM_BIND succeeding
+  - at least one GuC submission completing with a signaled fence
+  - clean load/unload behavior across 50 cycles
+
+Hardware rule:
+
+- a normal Alder Lake iGPU remains `i915` and does not count as dual-Xe
+- if the planned machine is really `i915 + Xe`, it is still Phase 1-style
+  coexistence, not Phase 1.5 dual-Xe
+- if no internal Xe-managed platform is available, use another two-Xe topology
+  such as `A380 + B580` or `A380 + A380`
+
 ## Recommended Patch Shape
 
 ### `freebsd-src-drm-6.12`
@@ -399,6 +428,50 @@ The first hardware milestone should be:
 16. `drm_dev_register()` succeeds if initialization reaches that stage
 17. render node appears only after the lower milestones are stable
 
+### Phase F.5: move to the dual-Xe lab topology
+
+After Phase F is stable on the A380-first host layout, add a Phase 1.5
+hardware milestone:
+
+1. move to a lab machine that actually has two Xe-managed devices
+2. keep the external A380 installed as a second Xe device
+3. verify both Xe devices enumerate and attach in one boot
+4. verify per-device firmware, GuC, CT, GT, and IRQ state remain isolated
+5. verify DRM minors and render nodes are created consistently for both
+   devices
+6. verify unload, reprobe, and attach-failure behavior on one Xe device does
+   not corrupt the other
+7. keep display takeover as a later milestone unless the port explicitly adds
+   display support
+8. classify any new failures as topology, PCI, IOMMU, firmware, or Xe-core
+   multi-device issues, not as proof the Phase F bring-up was wrong
+9. do not attempt cross-device BO sharing or PRIME/dma-buf in this phase
+10. do not attempt cross-device VM sharing in this phase
+11. keep display disabled on both devices
+12. do not upgrade the Linux 6.12 semantic baseline for this phase
+
+The explicit entry criteria for Phase F.5 should be:
+
+- A380 probe, firmware load, CT, and `drm_dev_register()` work on the
+  single-A380 layout
+- BO allocation, GGTT pinning, and basic VRAM access work
+- at least one BO-backed VM_BIND succeeds
+- at least one GuC submission completes and a fence signals
+- module load/unload is clean across 50 cycles
+
+The explicit dual-Xe failure modes to name and watch are:
+
+- GuC ID namespace collision between devices
+- second-device firmware-load or firmware-cache confusion
+- GGTT address-space isolation failure
+- concurrent firmware loads for the same blob name
+- DRM minor or render-node allocation failure on the second device
+- LinuxKPI global-state races during dual probe
+- IRQ or MSI/MSI-X registration collision
+- TTM device or memory-pool isolation failure
+- memory-pressure amplification when both devices allocate VRAM-backed BOs
+- unload or attach failure on one device freeing shared state used by the other
+
 ### Phase G: compare against a Linux 6.12 operational oracle
 
 - use Rocky Linux 10.x native boot for the cleanest same-hardware A/B signal
@@ -410,6 +483,16 @@ The first hardware milestone should be:
   FreeBSD LinuxKPI, FreeBSD DRM, or Xe-port local
 - keep the detailed test strategy in
   [xe-freebsd-linux-ab-testing.md](xe-freebsd-linux-ab-testing.md)
+
+For Phase 1.5, extend that oracle to the dual-Xe host:
+
+- capture both the internal Xe-managed device and the external A380
+  enumeration under Linux and
+  FreeBSD
+- compare firmware versions, render-node ordering, and per-device bring-up
+  milestones
+- treat multi-device-only failures as a separate class from single-device A380
+  failures
 
 ### Phase H: make testing reproducible
 

@@ -303,6 +303,71 @@ The cleanest first hardware milestone is:
 That keeps early review and debugging focused on Xe itself rather than driver
 ownership conflicts on the host display GPU.
 
+### 4. Phase 1.5 should move to a dual-Xe lab machine
+
+After the first A380 milestone is stable, the roadmap should add a deliberate
+Phase 1.5 hardware move:
+
+- transition to a lab system that actually provides two Xe-managed devices
+- keep the Arc A380 as the external secondary Xe device
+- treat this as a topology expansion milestone, not as instant display
+  enablement
+
+For Phase 1.5, "stable" should mean at least:
+
+- A380 probe, firmware load, CT, and `drm_dev_register()` work
+- BO allocation, GGTT pinning, and basic VRAM access work
+- at least one BO-backed VM_BIND succeeds
+- at least one GuC submission completes and a fence signals
+- load/unload does not leak or panic across 50 cycles
+
+Hardware warning:
+
+- a typical Alder Lake iGPU remains an `i915` device and does not count as
+  dual-Xe
+- if the planned "internal Arc/Xe" machine is really `i915 + Xe`, that is
+  still Phase 1-style coexistence, not Phase 1.5 dual-Xe
+- if no internal Xe-managed platform is available, use an alternative dual-Xe
+  target such as `A380 + B580` or `A380 + A380`
+
+The point of Phase 1.5 is to stop testing only the "old i915 host plus one Xe
+card" shape and begin testing the actual multi-Xe environment we care about.
+
+Phase 1.5 should prove at least:
+
+- internal Xe and external A380 both enumerate and attach cleanly
+- firmware, GuC, CT, GT, and IRQ setup remain independent per device
+- render-node and DRM-minor creation stay stable with two Xe devices present
+- detach, unload, reprobe, and error handling do not corrupt the other Xe
+  device
+- PCI topology, BAR sizing, and IOMMU behavior are still understood in the new
+  host layout
+- no cross-device BO sharing or PRIME/dma-buf experiments are required
+- no cross-device VM sharing is attempted
+- display remains disabled on both devices
+- the Linux 6.12 semantic baseline does not change
+
+Phase 1.5 should not silently become:
+
+- first display-enablement
+- first host-console takeover
+- first userptr/HMM milestone
+- first B580/Battlemage milestone
+
+Name the likely dual-Xe failure modes explicitly:
+
+- GuC ID namespace collision between devices
+- second-device firmware-load or firmware-cache confusion
+- GGTT address-space isolation failure
+- concurrent firmware load for the same blob name races or leaks state
+- DRM minor or render-node allocation breaks on the second device
+- LinuxKPI global state assumes one GPU and races during dual probe
+- IRQ registration or MSI/MSI-X setup collides between devices
+- TTM device or memory-pool isolation failure
+- memory-pressure behavior changes when both GPUs can allocate VRAM-backed BOs
+- module unload or attach failure on one device frees shared state still used
+  by the other
+
 ## First Honest Hardware Milestone
 
 0. `xe.ko` compiles and links without unresolved symbols.
@@ -331,6 +396,22 @@ ownership conflicts on the host display GPU.
 For each milestone, capture a paired Rocky Linux 10.x A/B log when practical.
 The comparison should show whether FreeBSD fails before, at, or after the same
 Linux Xe milestone on the same A380.
+
+For Phase 1.5, repeat that discipline on the dual-Xe lab platform:
+
+- capture Linux and FreeBSD logs for the internal Xe-managed device
+- capture Linux and FreeBSD logs for the external A380
+- record device enumeration order, render-node order, and firmware versions for
+  both devices
+- note whether failures are per-device or only appear when both Xe devices are
+  present
+- require evidence that both devices report correct BAR sizing, distinct render
+  nodes, distinct VRAM sizes, and separate GuC/CT init sequences
+- require evidence that both devices reach `drm_dev_register()` in one boot
+- require evidence that BO allocation and VM_BIND work independently on each
+  device
+- require evidence that load/unload or attach-failure testing on one device
+  leaves the other intact
 
 Track runtime semantic risks separately:
 

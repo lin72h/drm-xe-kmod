@@ -135,7 +135,7 @@ it cannot validate:
 
 ## Hardware Stance
 
-The preferred machine layout remains:
+Phase 1 baseline machine layout:
 
 - Alder Lake iGPU stays as the stable host/display GPU
 - Arc A380 is the Xe test device
@@ -161,6 +161,69 @@ Do not treat the bhyve topology as simultaneous A/B ownership.
 It is fast switching under a FreeBSD host, not shared ownership of the same
 GPU.
 
+## Phase 1.5 Hardware Stance
+
+After the first A380 milestone is stable, the roadmap should add a Phase 1.5
+lab move:
+
+- transition to a lab system that actually provides two Xe-managed devices
+- keep the external Arc A380 installed
+- use that machine as the first dual-Xe host topology
+
+For this phase, "stable" should mean at least:
+
+- A380 probe, firmware load, CT, and `drm_dev_register()` work
+- BO allocation, GGTT pinning, and basic VRAM access work
+- at least one BO-backed VM_BIND succeeds
+- at least one GuC submission completes and a fence signals
+- module load/unload does not leak or panic across 50 cycles
+
+Hardware warning:
+
+- a normal Alder Lake iGPU remains `i915` and does not count as dual-Xe
+- if the planned Phase 1.5 machine is really `i915 + Xe`, it is still a Phase
+  1-style topology
+- if no internal Xe-managed platform is available, use another two-Xe topology
+  such as `A380 + B580` or `A380 + A380`
+
+The Phase 1.5 purpose is:
+
+- validate internal-plus-external Xe coexistence
+- validate per-device attach, firmware, CT, GT, and render-node behavior
+- catch topology, PCI, IOMMU, and teardown bugs that do not appear on the
+  simpler Phase 1 host layout
+- keep cross-device sharing and display questions out of scope
+
+The Phase 1.5 purpose is not:
+
+- automatic display enablement
+- cross-device BO sharing or PRIME/dma-buf
+- cross-device VM sharing
+- replacing the Linux 6.12 baseline
+- skipping the A380-first milestone
+
+For native FreeBSD Phase 1.5 testing:
+
+- the internal Xe-managed device and the external A380 should both be visible
+  to the FreeBSD host
+- logs should be captured per device as well as per boot
+- any attach or unload test on one device should note the state of the other
+- display should remain disabled on both devices
+
+For native Rocky Linux Phase 1.5 testing:
+
+- boot the same dual-Xe machine into Rocky Linux 10.x
+- verify both Xe devices bind to Linux `xe`
+- capture enumeration order, firmware versions, and render-node ordering for
+  both devices
+
+For bhyve during Phase 1.5:
+
+- keep bhyve as a secondary diagnostic tool, not the primary multi-Xe truth
+- if one device is reserved for passthrough, record which device remains with
+  the host and which moves to the guest
+- do not confuse guest-visible partial topology with native dual-Xe behavior
+
 ## Linux Reference Capture
 
 For every meaningful Linux A380 run, capture at least:
@@ -178,6 +241,31 @@ For every meaningful Linux A380 run, capture at least:
 - `drm_info` output where available
 - `vainfo`, `vulkaninfo`, or a minimal render test when the driver reaches
   usable execution
+
+For Phase 1.5 dual-Xe runs, also capture:
+
+- `lspci -nn -vv` for both the internal Xe-managed device and the external
+  A380
+- `/dev/dri` node ownership and numbering for both devices
+- per-device `sysfs` and `debugfs` data where Linux exposes it
+- a note showing which device owns display responsibilities, if any
+- attach and unload logs that show whether one device's teardown perturbs the
+  other
+- evidence that both devices reported correct BAR sizes and distinct VRAM sizes
+- evidence that each device completed a separate GuC/CT init sequence
+
+Name the dual-Xe failure modes explicitly in the capture summary:
+
+- GuC ID namespace collision between devices
+- second-device firmware-load or firmware-cache confusion
+- GGTT address-space isolation failure
+- concurrent firmware loads for the same blob name
+- DRM minor or render-node allocation failure on the second device
+- LinuxKPI or core-DRM global-state races during dual probe
+- IRQ or MSI/MSI-X registration collision
+- TTM device or memory-pool isolation failure
+- memory-pressure amplification when both devices allocate BOs
+- unload or attach failure on one device freeing shared state used by the other
 
 Store logs with enough metadata to reproduce the comparison:
 
@@ -217,6 +305,13 @@ Compare Linux and FreeBSD for:
 - DRM minor and render-node creation
 - reset behavior after attach failure
 - panic, fault, or timeout locations
+
+For Phase 1.5, add:
+
+- multi-device enumeration order
+- which Xe device receives which DRM minor and render node
+- whether internal-device attach changes external-device behavior
+- whether unload, reset, or reprobe on one device perturbs the other
 
 The immediate purpose is to answer:
 

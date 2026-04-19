@@ -210,6 +210,72 @@ For CT specifically, keep the proofs distinct:
 - the first blocking CT request/reply should be an existing Linux 6.12 path,
   not a custom ping
 
+## Phase 1.5 Dual-Xe Test Order
+
+After the first A380 milestone is stable, Phase 1.5 should move to a newer
+lab machine with:
+
+- an internal Xe-managed GPU
+- the external Arc A380 still installed
+
+For this phase, "stable" should mean at least:
+
+- A380 probe, firmware load, CT, and `drm_dev_register()` work
+- BO allocation, GGTT pinning, and basic VRAM access work
+- at least one BO-backed VM_BIND succeeds
+- at least one GuC submission completes and a fence signals
+- module load/unload does not leak or panic across 50 cycles
+
+Hardware rule:
+
+- a normal Alder Lake iGPU remains `i915` and does not count as dual-Xe
+- if the planned machine is really `i915 + Xe`, it is still the Phase 1-style
+  topology, not this Phase 1.5 milestone
+- if no internal Xe-managed platform is available, use another two-Xe topology
+  such as `A380 + B580` or `A380 + A380`
+
+The Phase 1.5 test order should be:
+
+1. both Xe devices enumerate in PCI and attach in one boot
+2. firmware, GuC, CT, GT, and IRQ milestones are logged per device
+3. DRM minors and render nodes appear consistently for both devices
+4. attach failure on one Xe device does not destabilize the other
+5. unload or reprobe on one Xe device does not leak state into the other
+6. simple BO and VM_BIND checks can be attributed to the intended device
+7. no cross-device BO sharing or PRIME/dma-buf is attempted
+8. no cross-device VM sharing is attempted
+9. display remains disabled on both devices
+10. the Linux 6.12 semantic baseline remains unchanged
+11. only after that should any display-adjacent or higher-level multi-device
+    scenarios be explored
+
+Phase 1.5 is a topology-expansion milestone.
+It is not automatic approval to turn on display support, userptr, or other
+deferred semantics.
+
+Name the dual-Xe failure modes explicitly in the test plan:
+
+- GuC ID namespace collision between devices
+- second-device firmware-load or firmware-cache confusion
+- GGTT address-space isolation failure
+- concurrent firmware loads for the same blob name
+- DRM minor or render-node allocation failure on the second device
+- LinuxKPI or core-DRM global-state races during dual probe
+- IRQ or MSI/MSI-X registration collision
+- TTM device or memory-pool isolation failure
+- memory-pressure amplification when both devices allocate BOs
+- unload or attach failure on one device freeing shared state used by the other
+
+Do not call Phase 1.5 reached without evidence for all of the following:
+
+- both devices report correct BAR sizing
+- both devices create distinct render nodes
+- both devices report distinct VRAM sizing
+- both devices reach `drm_dev_register()` in one boot
+- both devices complete separate GuC/CT init sequences
+- BO allocation and VM_BIND work independently on each device
+- load/unload or attach-failure testing on one device leaves the other intact
+
 ## Linux Xe Tests To Mirror
 
 Mirror Linux Xe test intent, not necessarily KUnit mechanics.
