@@ -276,4 +276,3 @@ DMO/DMI architecture:
 
 Be Linux-accurate in the driver port, FreeBSD-native in substrate glue, and
 architecture-neutral toward DMO/DMI.
-
